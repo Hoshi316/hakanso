@@ -1,4 +1,5 @@
 // app/collection/[routeId]/page.tsx
+//テスト
 "use client";
 import { useEffect, useState } from "react";
 import Apple from "@/components/Apple";
