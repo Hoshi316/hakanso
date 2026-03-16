@@ -1,0 +1,1739 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+app/
+  api/
+    generate-plan/
+      route.ts
+    save-log/
+      route.ts
+    save-route/
+      route.ts
+    update-steps/
+      route.ts
+  collection/
+    [routeId]/
+      page.tsx
+  garden/
+    [routeId]/
+      page.tsx
+  map/
+    [routeId]/
+      page.tsx
+  favicon.ico
+  globals.css
+  layout.tsx
+  page.tsx
+components/
+  Apple.tsx
+  AppleTree.tsx
+  Header.tsx
+  MissionMap.tsx
+lib/
+  apple.ts
+  auth.ts
+  firebase.ts
+  firestore.ts
+  googleTasks.ts
+public/
+  file.svg
+  globe.svg
+  next.svg
+  vercel.svg
+  window.svg
+types/
+  log.ts
+  route.ts
+.gitignore
+eslint.config.mjs
+next.config.ts
+package.json
+postcss.config.mjs
+README.md
+tsconfig.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="components/Header.tsx">
+"use client";
+
+import { useEffect, useState } from "react";
+import { onAuthStateChanged, User } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { signInWithGoogle, logout } from "@/lib/auth";
+
+export default function Header() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  return (
+    <header className="mb-6 flex items-center justify-between rounded-2xl bg-white p-4 shadow">
+      <div>
+        <h1 className="text-xl font-bold text-gray-800">Route & Root</h1>
+        <p className="text-sm text-gray-500">
+          {loading
+            ? "確認中..."
+            : user
+            ? `ログイン中: ${user.displayName ?? user.email}`
+            : "未ログイン"}
+        </p>
+      </div>
+
+      {user ? (
+        <button
+          onClick={logout}
+          className="rounded-xl bg-gray-200 px-4 py-2 font-semibold text-gray-700"
+        >
+          ログアウト
+        </button>
+      ) : (
+        <button
+          onClick={signInWithGoogle}
+          className="rounded-xl bg-orange-500 px-4 py-2 font-semibold text-white"
+        >
+          Googleでログイン
+        </button>
+      )}
+    </header>
+  );
+}
+</file>
+
+<file path="lib/auth.ts">
+import { GoogleAuthProvider, signInWithPopup, signOut } from "firebase/auth";
+import { auth } from "./firebase";
+
+const provider = new GoogleAuthProvider();
+
+export async function signInWithGoogle() {
+  const result = await signInWithPopup(auth, provider);
+  return result.user;
+}
+
+export async function logout() {
+  await signOut(auth);
+}
+
+export async function getGoogleTasksAccessToken() {
+  const provider = new GoogleAuthProvider();
+  provider.addScope("https://www.googleapis.com/auth/tasks");
+
+  const result = await signInWithPopup(auth, provider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  return credential?.accessToken ?? null;
+}
+</file>
+
+<file path="lib/googleTasks.ts">
+import { Step } from "@/types/route";
+
+export async function exportToGoogleTasks(
+  accessToken: string,
+  goal: string,
+  steps: Step[]
+): Promise<void> {
+  const base = "https://tasks.googleapis.com/tasks/v1";
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+  };
+
+  // 1. タスクリストを作成
+  const listRes = await fetch(`${base}/users/@me/lists`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ title: `Route & Root: ${goal}` }),
+  });
+
+  if (!listRes.ok) {
+    const err = await listRes.json();
+    throw new Error(err.error?.message ?? "タスクリストの作成に失敗しました");
+  }
+
+  const list = await listRes.json();
+  const taskListId: string = list.id;
+
+  // 2. stepsを順番に追加
+  for (const step of steps) {
+    const taskRes = await fetch(`${base}/lists/${taskListId}/tasks`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        title: `Day${step.scheduledDay}: ${step.title}`,
+        notes: step.description,
+        status: step.done ? "completed" : "needsAction",
+      }),
+    });
+
+    if (!taskRes.ok) {
+      const err = await taskRes.json();
+      throw new Error(err.error?.message ?? `ステップ「${step.title}」の追加に失敗しました`);
+    }
+  }
+}
+</file>
+
+<file path="app/api/generate-plan/route.ts">
+import { GoogleGenAI, Type } from "@google/genai";
+
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY!,
+});
+
+export async function POST(req: Request) {
+  try {
+    const { goal, durationDays, message } = await req.json();
+
+    if (!goal || !durationDays) {
+      return Response.json(
+        { error: "goal と durationDays は必須です" },
+        { status: 400 }
+      );
+    }
+
+    const prompt = `
+あなたは学習・目標達成を支援するプランナーです。
+以下の情報をもとに、現実的で短い達成プランを作ってください。
+
+目標: ${goal}
+期間(日): ${durationDays}
+メッセージ: ${message ?? ""}
+
+条件:
+- steps は 3〜7 個
+- 各 step は短く具体的に
+- scheduledDay は 1 以上 ${durationDays} 以下
+- 日本語で出力
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            goal: {
+              type: Type.STRING,
+            },
+            summary: {
+              type: Type.STRING,
+            },
+            steps: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  scheduledDay: { type: Type.INTEGER },
+                },
+                required: ["title", "description", "scheduledDay"],
+              },
+            },
+          },
+          required: ["goal", "summary", "steps"],
+        },
+      },
+    });
+
+    const text = response.text;
+    const plan = JSON.parse(text);
+
+    return Response.json(plan);
+  } catch (error) {
+    console.error(error);
+    return Response.json(
+      { error: "プラン生成に失敗しました" },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/api/save-log/route.ts">
+import { saveLog } from "@/lib/firestore";
+import { getAppleStats } from "@/lib/apple";
+import { LogDoc } from "@/types/log";
+
+export async function POST(req: Request) {
+  try {
+    const { userId, routeId, moodScore, note } = await req.json();
+
+    if (!userId || !routeId || !moodScore) {
+      return Response.json(
+        { error: "userId, routeId, moodScore は必須です" },
+        { status: 400 }
+      );
+    }
+
+    const apple = getAppleStats(Number(moodScore));
+
+    const log: LogDoc = {
+      userId,
+      routeId,
+      moodScore: Number(moodScore),
+      note: note ?? "",
+      appleColor: apple.color,
+      appleSize: apple.size,
+      comment: apple.message,
+      createdAt: new Date().toISOString(),
+    };
+
+    const logId = await saveLog(log);
+
+    return Response.json({
+      success: true,
+      logId,
+      apple,
+    });
+  } catch (error) {
+    console.error(error);
+    return Response.json(
+      { error: "感情ログの保存に失敗しました" },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/api/save-route/route.ts">
+import { saveRoute } from "@/lib/firestore";
+import { RouteDoc } from "@/types/route";
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { userId, goal, durationDays, message, summary, steps } = body;
+
+    if (!userId || !goal || !durationDays || !summary || !steps) {
+      return Response.json(
+        { error: "必要なデータが不足しています" },
+        { status: 400 }
+      );
+    }
+
+    const stepsWithState = steps.map(
+      (
+        step: { title: string; description: string; scheduledDay: number },
+        index: number
+      ) => ({
+        id: crypto.randomUUID(),
+        title: step.title,
+        description: step.description,
+        scheduledDay: step.scheduledDay,
+        done: false,
+      })
+    );
+
+    const route: RouteDoc = {
+      userId,
+      goal,
+      durationDays,
+      message: message ?? "",
+      summary,
+      steps: stepsWithState,
+      progress: 0,
+      createdAt: new Date().toISOString(),
+    };
+
+    const routeId = await saveRoute(route);
+
+    return Response.json({ routeId });
+  } catch (error) {
+    console.error(error);
+    return Response.json(
+      { error: "ルートの保存に失敗しました" },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/api/update-steps/route.ts">
+import { updateStepDone } from "@/lib/firestore";
+
+export async function POST(req: Request) {
+  try {
+    const { routeId, steps } = await req.json();
+
+    if (!routeId || !steps) {
+      return Response.json(
+        { error: "routeId と steps は必須です" },
+        { status: 400 }
+      );
+    }
+
+    await updateStepDone(routeId, steps);
+
+    return Response.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    return Response.json(
+      { error: "ステップ更新に失敗しました" },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/globals.css">
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+</file>
+
+<file path="app/layout.tsx">
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "Create Next App",
+  description: "Generated by create next app",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+        {children}
+      </body>
+    </html>
+  );
+}
+</file>
+
+<file path="components/Apple.tsx">
+// components/Apple.tsx
+"use client";
+
+type AppleProps = {
+  variety: 'sun' | 'moon' | 'midnight' | 'forest';
+  size: number;
+};
+
+export default function Apple({ variety, size }: AppleProps) {
+  // 品種ごとのデザイン設定
+  const design = {
+    sun: { color: "bg-red-500", shadow: "shadow-red-200", effect: "animate-pulse" },
+    moon: { color: "bg-slate-300", shadow: "shadow-blue-100", effect: "" },
+    midnight: { color: "bg-indigo-900", shadow: "shadow-indigo-400", effect: "brightness-110" },
+    forest: { color: "bg-emerald-500", shadow: "shadow-green-200", effect: "" },
+  }[variety];
+
+  return (
+    <div className="flex flex-col items-center justify-center">
+      <div className={`
+        rounded-full relative transition-all duration-1000 shadow-2xl
+        ${design.color} ${design.shadow} ${design.effect}
+      `}
+      style={{ width: `${size}px`, height: `${size}px` }}>
+        {/* 光沢 */}
+        <div className="absolute top-1/4 left-1/4 w-1/4 h-1/4 bg-white/40 rounded-full blur-[1px]"></div>
+        
+        {/* 品種ごとの特別な装飾（例：midnightなら星のような点々） */}
+        {variety === 'midnight' && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-white text-[10px] opacity-50">✨</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/AppleTree.tsx">
+// components/AppleTree.tsx
+"use client";
+import Apple from "./Apple"; // 前回作ったリンゴパーツ
+
+type AppleTreeProps = {
+  level: number;    // 0:苗, 1:若木, 2:成木
+  variety: 'sun' | 'moon' | 'midnight' | 'forest'; // リンゴの種類
+  hasApple: boolean; // 実がついているかどうか
+};
+
+export default function AppleTree({ level, variety, hasApple }: AppleTreeProps) {
+  return (
+    <div className="relative flex flex-col items-center justify-center w-80 h-80">
+      {/* 木の見た目（レベル0〜2） */}
+      <div className="transition-all duration-1000 ease-out text-8xl">
+        {level === 0 && "🌱"}
+        {level === 1 && "🎋"}
+        {level >= 2 && "🌳"} 
+      </div>
+
+      {/* リンゴの実（レベル2以上かつ実がある時だけ表示） */}
+      {level >= 2 && hasApple && (
+        <div className="absolute top-12 animate-bounce">
+           {/* 前に作ったAppleコンポーネントを呼び出す */}
+           <Apple variety={variety} size={60} />
+        </div>
+      )}
+
+      {/* 地面 */}
+      <div className="mt-4 w-32 h-4 bg-orange-200/50 rounded-full blur-sm"></div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/MissionMap.tsx">
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { exportToGoogleTasks } from "@/lib/googleTasks";
+import { getGoogleTasksAccessToken } from "@/lib/auth";
+
+type Step = {
+  id: string;
+  title: string;
+  description: string;
+  scheduledDay: number;
+  done: boolean;
+};
+
+type Props = {
+  routeId: string;
+  goal: string;
+  summary: string;
+  progress: number;
+  steps: Step[];
+};
+
+export default function MissionMap({
+  routeId,
+  goal,
+  summary,
+  progress,
+  steps,
+}: Props) {
+  const [localSteps, setLocalSteps] = useState(steps);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const router = useRouter();
+
+  const currentProgress =
+    localSteps.length === 0
+      ? 0
+      : Math.round(
+          (localSteps.filter((step) => step.done).length / localSteps.length) * 100
+        );
+
+  const handleToggle = async (stepId: string) => {
+    const updatedSteps = localSteps.map((step) =>
+      step.id === stepId ? { ...step, done: !step.done } : step
+    );
+
+    setLocalSteps(updatedSteps);
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/update-steps", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          routeId,
+          steps: updatedSteps,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "更新に失敗しました");
+      }
+
+      router.refresh();
+    } catch (error) {
+      console.error(error);
+      alert("更新に失敗しました");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleExportToGoogleTasks = async () => {
+    setExporting(true);
+
+    try {
+      const accessToken = await getGoogleTasksAccessToken();
+
+      if (!accessToken) {
+        throw new Error("Google Tasks のアクセストークンを取得できませんでした");
+      }
+
+      await exportToGoogleTasks(accessToken, goal, localSteps);
+
+      alert(`「Route & Root: ${goal}」を Google Tasks に書き出しました`);
+    } catch (error) {
+      console.error(error);
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Google Tasks への書き出しに失敗しました"
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <main className="min-h-screen bg-orange-50 p-8 text-gray-800">
+      <div className="mx-auto max-w-3xl">
+        <h1 className="mb-2 text-4xl font-bold">旅のしおり</h1>
+        <h2 className="mb-2 text-2xl font-semibold">{goal}</h2>
+        <p className="mb-4 text-gray-700">{summary}</p>
+
+        <div className="mb-8 rounded-xl bg-white p-4 shadow">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="font-semibold">進捗</p>
+            <p className="font-bold text-orange-600">{currentProgress}%</p>
+          </div>
+          <div className="h-3 w-full overflow-hidden rounded-full bg-orange-100">
+            <div
+              className="h-full rounded-full bg-orange-500 transition-all duration-500"
+              style={{ width: `${currentProgress}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {localSteps.map((step) => (
+            <div
+              key={step.id}
+              className={`rounded-xl border p-4 shadow-sm transition ${
+                step.done
+                  ? "border-gray-200 bg-gray-50 opacity-70"
+                  : "border-orange-200 bg-white"
+              }`}
+            >
+              <div className="mb-2 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={step.done}
+                  disabled={loading}
+                  onChange={() => handleToggle(step.id)}
+                  className="mt-1 h-5 w-5"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-orange-600">
+                    Day {step.scheduledDay}
+                  </p>
+                  <h3
+                    className={`text-lg font-bold ${
+                      step.done ? "line-through text-gray-500" : ""
+                    }`}
+                  >
+                    {step.title}
+                  </h3>
+                  <p className={step.done ? "text-gray-500" : "text-gray-700"}>
+                    {step.description}
+                  </p>
+                  <p className="mt-1 text-sm">
+                    状態: {step.done ? "完了" : "未完了"}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-8 flex flex-col items-center gap-4">
+          <button
+            onClick={handleExportToGoogleTasks}
+            disabled={exporting}
+            className="rounded-xl bg-blue-500 px-6 py-3 font-bold text-white shadow transition hover:bg-blue-600 disabled:opacity-50"
+          >
+            {exporting ? "書き出し中..." : "Google Tasks に書き出す"}
+          </button>
+
+          <Link
+            href={`/garden/${routeId}`}
+            className="rounded-xl bg-emerald-500 px-6 py-3 font-bold text-white shadow transition hover:bg-emerald-600"
+          >
+            果樹園（Garden）へ向かう
+          </Link>
+        </div>
+      </div>
+    </main>
+  );
+}
+</file>
+
+<file path="lib/apple.ts">
+// lib/apple.ts
+export const getAppleStats = (score: number) => {
+  const mapping: Record<number, { color: string; size: number; message: string }> = {
+    1: { color: "#888888", size: 60,  message: "今は根を休める時。" },
+    2: { color: "#6fa8dc", size: 75,  message: "静かに栄養を蓄えよう。" },
+    3: { color: "#ffaa00", size: 90,  message: "着実に育っているよ。" },
+    4: { color: "#ff7043", size: 105, message: "いい色がついてきたね！" },
+    5: { color: "#ff3333", size: 120, message: "最高の果実だ！" },
+  };
+  return mapping[score] || mapping[3];
+};
+</file>
+
+<file path="lib/firebase.ts">
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getAuth } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
+
+const firebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN!,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID!,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
+};
+
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+
+export const auth = getAuth(app);
+export const db = getFirestore(app);
+export default app;
+</file>
+
+<file path="public/file.svg">
+<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
+</file>
+
+<file path="public/globe.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
+</file>
+
+<file path="public/next.svg">
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
+</file>
+
+<file path="public/vercel.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
+</file>
+
+<file path="public/window.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
+</file>
+
+<file path="types/log.ts">
+export type LogDoc = {
+  userId: string;
+  routeId: string;
+  moodScore: number;
+  note: string;
+  appleColor: string;
+  appleSize: number;
+  comment: string;
+  createdAt: string;
+};
+</file>
+
+<file path="types/route.ts">
+export type Step = {
+  id: string;
+  title: string;
+  description: string;
+  scheduledDay: number;
+  done: boolean;
+};
+
+export type RoutePlan = {
+  goal: string;
+  summary: string;
+  steps: {
+    title: string;
+    description: string;
+    scheduledDay: number;
+  }[];
+};
+
+export type RouteDoc = {
+  userId: string;
+  goal: string;
+  durationDays: number;
+  message: string;
+  summary: string;
+  steps: Step[];
+  progress: number;
+  createdAt: string;
+};
+</file>
+
+<file path=".gitignore">
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+</file>
+
+<file path="eslint.config.mjs">
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTs from "eslint-config-next/typescript";
+
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  ...nextTs,
+  // Override default ignores of eslint-config-next.
+  globalIgnores([
+    // Default ignores of eslint-config-next:
+    ".next/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+  ]),
+]);
+
+export default eslintConfig;
+</file>
+
+<file path="next.config.ts">
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  /* config options here */
+};
+
+export default nextConfig;
+</file>
+
+<file path="postcss.config.mjs">
+const config = {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+
+export default config;
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+  ],
+  "exclude": ["node_modules"]
+}
+</file>
+
+<file path="app/collection/[routeId]/page.tsx">
+// app/collection/[routeId]/page.tsx
+//テスト
+"use client";
+import { useEffect, useState } from "react";
+import Apple from "@/components/Apple";
+import Link from "next/link";
+
+export default function CollectionPage() {
+  const [apples, setApples] = useState<any[]>([]);
+
+  useEffect(() => {
+    // 保存されたリンゴを読み込む
+    const saved = JSON.parse(localStorage.getItem("apple-collection") || "[]");
+    setApples(saved);
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-stone-100 p-8">
+      <div className="max-w-4xl mx-auto">
+        <div className="flex justify-between items-center mb-12">
+          <h1 className="text-4xl font-black text-stone-800">🍎 リンゴ貯蔵庫</h1>
+          <Link href="/garden/test" className="text-stone-500 hover:underline">← 農園に戻る</Link>
+        </div>
+
+        {apples.length === 0 ? (
+          <div className="text-center py-20 bg-white rounded-3xl border-4 border-dashed border-stone-200">
+            <p className="text-stone-400 text-xl">まだ収穫されたリンゴはありません。<br/>農園で養分を注いでみましょう！</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            {apples.map((apple) => (
+              <div key={apple.id} className="bg-white p-6 rounded-2xl shadow hover:shadow-xl transition-all group relative">
+                <Apple variety={apple.variety} size={80} />
+                <div className="mt-4 text-center">
+                  <p className="text-xs text-stone-400 font-mono">{apple.date}</p>
+                  <p className="text-sm font-bold text-stone-700 mt-1 truncate">{apple.variety.toUpperCase()}</p>
+                </div>
+                
+                {/* ホバーでメモを表示する簡易的な仕組み */}
+                <div className="absolute inset-0 bg-black/80 text-white p-4 text-xs rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center overflow-hidden">
+                  {apple.memo}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="app/garden/[routeId]/page.tsx">
+"use client";
+import { useState, use } from "react"; 
+import AppleTree from "@/components/AppleTree";
+import Link from "next/link";
+
+export default function GardenPage({ params }: { params: Promise<{ routeId: string }> }) {
+  // 1. Next.js 15のルール：Promiseを展開してIDを取り出す
+  const resolvedParams = use(params);
+  const routeId = resolvedParams.routeId;
+
+  // 状態管理
+  const [nutrition, setNutrition] = useState(0);
+  const [isAdult, setIsAdult] = useState(false); 
+  const [mood, setMood] = useState(3);
+  const [memo, setMemo] = useState("");
+  const [variety, setVariety] = useState<'sun' | 'moon' | 'midnight' | 'forest'>('forest');
+  const [isWatering, setIsWatering] = useState(false);
+
+  const isFull = nutrition >= 100;
+
+  // 木のレベル計算
+  let treeLevel = 0;
+  if (isAdult) {
+    treeLevel = 2; // 大人ならずっと 🌳
+  } else {
+    treeLevel = nutrition < 30 ? 0 : nutrition < 60 ? 1 : 2;
+  }
+
+  const handleGiveNutrition = () => {
+    setIsWatering(true);
+    setTimeout(() => {
+      const boost = mood * 5 + (memo.length > 0 ? 10 : 0);
+      const newNutrition = Math.min(nutrition + boost, 100);
+      setNutrition(newNutrition);
+
+      if (newNutrition >= 60) setIsAdult(true);
+
+      if (mood >= 4) setVariety('sun');
+      else if (mood <= 2) setVariety('midnight');
+      else setVariety('forest');
+
+      setIsWatering(false);
+    }, 1000);
+  };
+
+  const handleHarvest = () => {
+    const newApple = { id: Date.now(), variety, memo, date: new Date().toLocaleDateString() };
+    const savedApples = JSON.parse(localStorage.getItem("apple-collection") || "[]");
+    localStorage.setItem("apple-collection", JSON.stringify([...savedApples, newApple]));
+
+    alert("リンゴを収穫しました！🍎");
+    setNutrition(0); 
+    setMemo("");
+  };
+
+  return (
+    <div className="min-h-screen bg-orange-50 p-6 pb-24 flex flex-col items-center">
+      {/* ヘッダー */}
+      <header className="mb-8 text-center">
+        <h1 className="text-3xl font-black text-orange-900">🍎 Route & Root 農園</h1>
+        <p className="text-orange-600/80">ROUTE ID: {routeId}</p>
+      </header>
+
+      <div className="max-w-5xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+        
+        {/* 左側：入力エリア */}
+        <div className="bg-white p-8 rounded-3xl shadow-xl border-2 border-orange-100">
+          <h2 className="text-xl font-bold text-gray-700 mb-6">📝 今日の養分</h2>
+          <div className="space-y-6">
+            <div>
+              <label className="block text-sm font-bold text-gray-500 mb-2">やる気レベル：{mood}</label>
+              <input 
+                type="range" min="1" max="5" value={mood} 
+                onChange={(e) => setMood(Number(e.target.value))}
+                className="w-full accent-orange-500"
+              />
+            </div>
+            <textarea 
+              className="w-full p-4 bg-orange-50/50 border border-orange-100 rounded-xl h-32 outline-none"
+              placeholder="今の気持ちをメモして養分にしよう..."
+              value={memo}
+              onChange={(e) => setMemo(e.target.value)}
+            />
+            {isFull ? (
+              <button onClick={handleHarvest} className="w-full py-4 bg-gradient-to-r from-yellow-400 to-orange-500 text-white font-black rounded-2xl shadow-lg animate-bounce">
+                🍎 リンゴを収穫する！
+              </button>
+            ) : (
+              <button onClick={handleGiveNutrition} disabled={isWatering} className="w-full py-4 bg-orange-500 text-white font-bold rounded-2xl shadow-lg">
+                {isWatering ? "養分吸収中..." : "養分を注ぐ 💧"}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 右側：表示エリア */}
+        <div className="flex flex-col items-center justify-center bg-white p-8 rounded-3xl shadow-xl border-2 border-emerald-100 min-h-[450px]">
+          <AppleTree level={treeLevel} variety={variety} hasApple={isFull} />
+          <div className="mt-8 w-full max-w-xs">
+            <div className="flex justify-between text-xs font-bold text-emerald-700 mb-1">
+              <span>成長ゲージ</span>
+              <span>{nutrition}%</span>
+            </div>
+            <div className="w-full bg-gray-100 h-3 rounded-full overflow-hidden">
+              <div className="bg-emerald-500 h-full transition-all duration-1000" style={{ width: `${nutrition}%` }} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* フッターナビゲーション */}
+      <footer className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md bg-white/80 backdrop-blur-md p-4 rounded-full shadow-2xl border border-white/50 flex justify-around items-center">
+        <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center shadow-lg shadow-orange-200">
+          <span className="text-2xl text-white">🍎</span>
+        </div>
+        <Link href={`/map/${routeId}`} className="flex flex-col items-center gap-1">
+          <span className="text-2xl">🗺️</span>
+          <span className="text-[10px] font-bold text-slate-500">マップ</span>
+        </Link>
+        <Link href="/collection/user-1" className="flex flex-col items-center gap-1">
+          <span className="text-2xl">📦</span>
+          <span className="text-[10px] font-bold text-slate-500">貯蔵庫</span>
+        </Link>
+      </footer>
+    </div>
+  );
+}
+</file>
+
+<file path="app/map/[routeId]/page.tsx">
+import { getRoute } from "@/lib/firestore";
+import MissionMap from "@/components/MissionMap";
+
+type PageProps = {
+  params: Promise<{
+    routeId: string;
+  }>;
+};
+
+export default async function MapPage({ params }: PageProps) {
+  const { routeId } = await params;
+  const route = await getRoute(routeId);
+
+  const typedRoute = route as {
+    id: string;
+    goal: string;
+    summary: string;
+    progress: number;
+    steps: {
+      id: string;
+      title: string;
+      description: string;
+      scheduledDay: number;
+      done: boolean;
+    }[];
+  };
+
+  return (
+    <MissionMap
+      routeId={routeId}
+      goal={typedRoute.goal}
+      summary={typedRoute.summary}
+      progress={typedRoute.progress}
+      steps={typedRoute.steps}
+    />
+  );
+}
+</file>
+
+<file path="app/page.tsx">
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation"; // 案内役（ルーター）を呼びます
+import Header from "@/components/Header";
+import { useEffect } from "react";
+import { onAuthStateChanged, User } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+
+export default function Home() {
+  const router = useRouter(); 
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+  const [goal, setGoal] = useState("");
+  const [durationDays, setDurationDays] = useState(7);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleGenerate = async () => {
+    if (!user) {
+      throw new Error("先にログインしてください");
+    }
+    setLoading(true);
+    setError("");
+
+    try {
+      // 1. Gemini AI にプランを作ってもらう
+      const res = await fetch("/api/generate-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal, durationDays, message }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "プラン生成に失敗しました");
+
+      // 2. 作ってもらったプランを Firestore に保存する
+      const saveRes = await fetch("/api/save-route", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user.uid,
+          goal,
+          durationDays,
+          message,
+          summary: data.summary,
+          steps: data.steps,
+        }),
+      });
+      const saveData = await saveRes.json();
+      if (!saveRes.ok) throw new Error(saveData.error || "保存に失敗しました");
+
+      // 3. 保存に成功したら、そのプラン専用のページへ移動する！
+      router.push(`/map/${saveData.routeId}`);
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
+      setLoading(false); // エラーの時だけ loading を解除します
+    }
+  };
+
+  return (
+    <main className="min-h-screen bg-amber-50 p-8 text-gray-800">
+      <div className="mx-auto max-w-3xl">
+
+        <h1 className="mb-2 text-4xl font-bold">Route & Root</h1>
+        <p className="mb-8 text-lg">目標を入力すると、AI が旅のしおりを作ってくれます。</p>
+        <Header />
+
+        <div className="mb-8 rounded-2xl bg-white p-6 shadow">
+          {/* 入力項目（ここは前と変わりません） */}
+          <div className="mb-4">
+            <label className="mb-2 block font-semibold">目標</label>
+            <input type="text" value={goal} onChange={(e) => setGoal(e.target.value)} className="w-full rounded-lg border border-gray-300 p-3" />
+          </div>
+          <div className="mb-4">
+            <label className="mb-2 block font-semibold">何日で達成したい？</label>
+            <input type="number" value={durationDays} onChange={(e) => setDurationDays(Number(e.target.value))} className="w-full rounded-lg border border-gray-300 p-3" />
+          </div>
+          <div className="mb-4">
+            <label className="mb-2 block font-semibold">自分への一言</label>
+            <textarea value={message} onChange={(e) => setMessage(e.target.value)} className="w-full rounded-lg border border-gray-300 p-3" rows={4} />
+          </div>
+
+          <button
+            onClick={handleGenerate}
+            disabled={loading || !goal || !user}
+            className="rounded-xl bg-orange-500 px-6 py-3 font-semibold text-white disabled:opacity-50"
+          >
+            {loading ? "生成中..." : !user ? "ログインしてください" : "旅を始める"}
+          </button>
+          {error && <p className="mt-4 text-red-600">{error}</p>}
+        </div>
+      </div>
+    </main>
+  );
+}
+</file>
+
+<file path="lib/firestore.ts">
+import { addDoc, collection, doc, getDoc, updateDoc } from "firebase/firestore";
+import { db } from "./firebase";
+import { RouteDoc } from "@/types/route";
+import { LogDoc } from "@/types/log";
+
+export async function saveRoute(route: RouteDoc) {
+  const docRef = await addDoc(collection(db, "routes"), route);
+  return docRef.id;
+}
+
+export async function getRoute(routeId: string) {
+  const docRef = doc(db, "routes", routeId);
+  const snap = await getDoc(docRef);
+
+  if (!snap.exists()) {
+    throw new Error("ルートが見つかりません");
+  }
+
+  return { id: snap.id, ...snap.data() };
+}
+
+export async function updateStepDone(
+  routeId: string,
+  steps: RouteDoc["steps"]
+) {
+  const progress =
+    steps.length === 0
+      ? 0
+      : Math.round(
+          (steps.filter((step) => step.done).length / steps.length) * 100
+        );
+
+  await updateDoc(doc(db, "routes", routeId), {
+    steps,
+    progress,
+  });
+}
+
+export async function saveLog(log: LogDoc) {
+  const docRef = await addDoc(collection(db, "logs"), log);
+  return docRef.id;
+}
+</file>
+
+<file path="package.json">
+{
+  "name": "route-and-root",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@google/genai": "^1.45.0",
+    "firebase": "^12.10.0",
+    "next": "16.1.6",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.6",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
+</file>
+
+<file path="README.md">
+<<<<<<< HEAD
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Getting Started
+
+First, run the development server:
+
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+## Learn More
+
+To learn more about Next.js, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+=======
+# hakanso
+
+# Route & Root
+
+Route & Root は、目標達成までのプロセスを「旅」として捉え、  
+日々の感情を「リンゴ」として育てるタスク管理アプリです。
+
+ユーザーが目標を入力すると、AI が達成までの道のりを「旅のしおり」として生成します。  
+さらに、その日の気分や一言メモを記録することで、自分だけのリンゴが変化していきます。
+
+進捗だけでなく、葛藤や疲れも含めて「成長の記録」として残すことを目指しています。
+
+---
+
+## コンセプト
+
+従来のタスク管理アプリは、完了や進捗に注目しがちです。  
+Route & Root では、そこに感情の記録を加えます。
+
+- **Route** = 目標達成までの道のり
+- **Root** = その過程で育つ感情と成長の記録
+
+うまくいかなかった日や気分が落ち込んだ日も、  
+失敗ではなく「育ち方の違い」として可視化します。
+
+---
+
+## MVPで実装する機能
+
+- 目標入力フォーム
+- AIによるミッションプラン生成
+- ミッションマップ表示
+- 気分ログ入力
+- 気分に応じたリンゴの変化
+- Firebase Authentication によるログイン
+- Firestore へのデータ保存
+
+---
+
+## 画面構成
+
+### 1. 目標入力画面
+ユーザーが以下を入力します。
+
+- 目標
+- 何日で達成したいか
+- 自分への一言メッセージ
+
+送信すると、Gemini API を使ってプランを生成します。
+
+### 2. ミッションマップ画面
+AI が生成したステップ一覧を表示します。
+
+- タスクの分解表示
+- 各ステップの確認
+- 完了チェック
+- 進捗確認
+
+### 3. 果樹園画面
+ユーザーが以下を入力します。
+
+- 気分スコア（1〜5）
+- 一言メモ
+
+その内容に応じて、リンゴの
+
+- 色
+- 大きさ
+
+が変化します。
+
+---
+
+## 使用技術
+
+- **言語:** TypeScript
+- **フレームワーク:** Next.js（App Router）
+- **UI:** React + Tailwind CSS
+- **AI:** Gemini API
+- **認証:** Firebase Authentication
+- **データベース:** Firestore
+- **デプロイ:** Vercel
+
+---
+
+## ディレクトリ構成
+
+```txt
+route-and-root/
+├─ app/
+│  ├─ page.tsx
+│  ├─ map/
+│  │  └─ [routeId]/
+│  │     └─ page.tsx
+│  ├─ garden/
+│  │  └─ [routeId]/
+│  │     └─ page.tsx
+│  ├─ api/
+│  │  ├─ generate-plan/
+│  │  │  └─ route.ts
+│  │  ├─ save-route/
+│  │  │  └─ route.ts
+│  │  ├─ get-route/
+│  │  │  └─ route.ts
+│  │  └─ save-log/
+│  │     └─ route.ts
+│  ├─ layout.tsx
+│  └─ globals.css
+│
+├─ components/
+│  ├─ GoalForm.tsx
+│  ├─ MissionMap.tsx
+│  ├─ Apple.tsx
+│  ├─ MoodForm.tsx
+│  └─ Header.tsx
+│
+├─ lib/
+│  ├─ firebase.ts
+│  ├─ firestore.ts
+│  ├─ gemini.ts
+│  └─ apple.ts
+│
+├─ types/
+│  ├─ route.ts
+│  ├─ log.ts
+│  └─ user.ts
+│
+├─ .env.local
+├─ package.json
+└─ README.md
+````
+
+---
+
+## データ構造
+
+### users/{uid}
+
+ユーザー情報を保存します。
+
+### routes/{routeId}
+
+以下の情報を保存します。
+
+* goal
+* durationDays
+* message
+* summary
+* steps
+* progress
+* userId
+
+### logs/{logId}
+
+以下の情報を保存します。
+
+* routeId
+* userId
+* moodScore
+* note
+* appleColor
+* appleSize
+* comment
+
+---
+
+## AIが返すJSON形式
+
+AI は以下のような形式でプランを返します。
+
+```json
+{
+  "goal": "統計のテストに合格する",
+  "summary": "7日間で復習と演習を進める学習ルート",
+  "steps": [
+    {
+      "title": "確率の基本を復習する",
+      "description": "定義と代表的な公式を確認する",
+      "scheduledDay": 1
+    },
+    {
+      "title": "過去問を3問解く",
+      "description": "基礎問題を中心に解いて流れを確認する",
+      "scheduledDay": 2
+    }
+  ]
+}
+```
+
+---
+
+## リンゴ変化ルール
+
+| moodScore | color   | size |
+| --------- | ------- | ---- |
+| 1         | #888888 | 60   |
+| 2         | #6fa8dc | 75   |
+| 3         | #ffaa00 | 90   |
+| 4         | #ff7043 | 105  |
+| 5         | #ff3333 | 120  |
+
+---
+
+## セットアップ方法
+
+### 1. リポジトリをクローン
+
+```bash
+git clone <リポジトリURL>
+cd route-and-root
+```
+
+### 2. パッケージをインストール
+
+```bash
+npm install
+```
+
+### 3. `.env.local` を作成
+
+以下の環境変数を設定してください。
+
+```env
+GEMINI_API_KEY=your_gemini_api_key
+
+NEXT_PUBLIC_FIREBASE_API_KEY=your_firebase_api_key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_firebase_auth_domain
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_storage_bucket
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+NEXT_PUBLIC_FIREBASE_APP_ID=your_app_id
+```
+
+### 4. 開発サーバーを起動
+
+```bash
+npm run dev
+```
+
+ブラウザで `http://localhost:3000` を開いてください。
+
+---
+
+## 役割分担
+
+### ロジック / API / データベース担当
+
+* Gemini API 連携
+* API route 実装
+* Firebase Authentication
+* Firestore 接続
+* 型定義
+* 気分からリンゴパラメータへの変換ロジック
+
+### UI / デザイン担当
+
+* 入力フォームUI
+* ミッションマップUI
+* Appleコンポーネント
+* 果樹園画面の見た目
+* Tailwind によるデザイン調整
+
+---
+
+## 今回の開発目標
+
+このプロジェクトは、万能な人生管理アプリを作ることが目的ではありません。
+
+MVPで目指すのは、次の体験を完成させることです。
+
+> 目標を入力すると、AIが旅のしおりを作ってくれる。
+> 気分を記録すると、リンゴが育つ。
+
+この一本の体験を、きちんと動く形で完成させます。
+
+---
+
+## 今回は実装しないもの
+
+以下はMVPの対象外です。
+
+* Google Calendar 連携
+* Google Tasks 連携
+* 音声入力
+* 画像入力
+* ソーシャル共有
+* RAGによる推薦
+* 過去の自分 / 未来の自分キャラクター機能
+
+---
+
+## デモの流れ
+
+1. ログインする
+2. 目標を入力する
+3. AIでプランを生成する
+4. ミッションマップを見る
+5. 果樹園へ移動する
+6. 気分とメモを入力する
+7. リンゴが変化する
+
+---
+
+## メンバー
+
+* ほし
+* ゆいのみず
+
+---
+
+## ライセンス
+>>>>>>> b89f4b251892c53cbd23d012b5b8f74fb36efeef
+</file>
+
+</files>

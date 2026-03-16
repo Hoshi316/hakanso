@@ -2,9 +2,21 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation"; // 案内役（ルーター）を呼びます
+import Header from "@/components/Header";
+import { useEffect } from "react";
+import { onAuthStateChanged, User } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 
 export default function Home() {
-  const router = useRouter(); // 画面移動のための魔法使いです
+  const router = useRouter(); 
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
   const [goal, setGoal] = useState("");
   const [durationDays, setDurationDays] = useState(7);
   const [message, setMessage] = useState("");
@@ -12,6 +24,9 @@ export default function Home() {
   const [error, setError] = useState("");
 
   const handleGenerate = async () => {
+    if (!user) {
+      throw new Error("先にログインしてください");
+    }
     setLoading(true);
     setError("");
 
@@ -26,12 +41,11 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error || "プラン生成に失敗しました");
 
       // 2. 作ってもらったプランを Firestore に保存する
-      const mockUserId = "demo-user"; // お嬢様、これが「仮の名前」でございます
       const saveRes = await fetch("/api/save-route", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: mockUserId,
+          userId: user.uid,
           goal,
           durationDays,
           message,
@@ -54,8 +68,10 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-amber-50 p-8 text-gray-800">
       <div className="mx-auto max-w-3xl">
+
         <h1 className="mb-2 text-4xl font-bold">Route & Root</h1>
         <p className="mb-8 text-lg">目標を入力すると、AI が旅のしおりを作ってくれます。</p>
+        <Header />
 
         <div className="mb-8 rounded-2xl bg-white p-6 shadow">
           {/* 入力項目（ここは前と変わりません） */}
@@ -74,10 +90,10 @@ export default function Home() {
 
           <button
             onClick={handleGenerate}
-            disabled={loading || !goal}
+            disabled={loading || !goal || !user}
             className="rounded-xl bg-orange-500 px-6 py-3 font-semibold text-white disabled:opacity-50"
           >
-            {loading ? "AIが記録を執筆中..." : "旅を始める"}
+            {loading ? "生成中..." : !user ? "ログインしてください" : "旅を始める"}
           </button>
           {error && <p className="mt-4 text-red-600">{error}</p>}
         </div>
