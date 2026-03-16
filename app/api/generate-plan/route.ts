@@ -4,6 +4,44 @@ const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY!,
 });
 
+const stepSchema = {
+  type: Type.OBJECT,
+  properties: {
+    title: { type: Type.STRING },
+    description: { type: Type.STRING },
+    scheduledDay: { type: Type.INTEGER },
+  },
+  required: ["title", "description", "scheduledDay"],
+};
+
+const planSchema = {
+  type: Type.OBJECT,
+  properties: {
+    style:          { type: Type.STRING },
+    styleLabel:     { type: Type.STRING },
+    styleEmoji:     { type: Type.STRING },
+    philosophy:     { type: Type.STRING },
+    tagline:        { type: Type.STRING },
+    suitableFor:    { type: Type.STRING },
+    tradeoff:       { type: Type.STRING },
+    intensityLevel: { type: Type.INTEGER },
+    // --- ここから追加 ---
+    recommendedDays: { type: Type.INTEGER }, // AIが提案する最適日数
+    daysComment:     { type: Type.STRING  }, // 期間についての一言
+    // --- ここまで追加 ---
+    goal:           { type: Type.STRING },
+    summary:        { type: Type.STRING },
+    steps:          { type: Type.ARRAY, items: stepSchema },
+  },
+  required: [
+    "style", "styleLabel", "styleEmoji",
+    "philosophy", "tagline", "suitableFor", "tradeoff",
+    "intensityLevel", 
+    "recommendedDays", "daysComment",
+    "goal", "summary", "steps",
+  ],
+};
+
 export async function POST(req: Request) {
   try {
     const { goal, durationDays, message } = await req.json();
@@ -16,18 +54,60 @@ export async function POST(req: Request) {
     }
 
     const prompt = `
-あなたは学習・目標達成を支援するプランナーです。
-以下の情報をもとに、現実的で短い達成プランを作ってください。
+あなたは目標達成を支援するプランナーです。
+以下の目標に対して、哲学が全く異なる3つのプランを作成してください。
 
 目標: ${goal}
-期間(日): ${durationDays}
-メッセージ: ${message ?? ""}
+ユーザー希望期間(日): ${durationDays}
+メッセージ: ${message ?? "なし"}
 
-条件:
-- steps は 3〜7 個
-- 各 step は短く具体的に
-- scheduledDay は 1 以上 ${durationDays} 以下
+━━━━━━━━━━━━━━━━━━━━━━━━━
+【プラン1】style: "full_throttle"
+styleLabel: "Full Throttle"
+styleEmoji: "⚡"
+philosophy: 速度と密度で圧倒する。今すぐ結果を出す。
+tagline: 最速で、限界の向こう側へ。
+
+期間ルール:
+- ユーザー希望期間を「上限」として扱う。
+- あなたが「本気を出せばこの日数でいける」と判断した最短日数を recommendedDays に設定する。
+- 最短は希望期間の3分の1まで許容（例：希望7日 → 最短2日）。
+- 各ステップに「何時間、何をやるか」を具体的に。
+- 禁止ワード：「無理せず」「少しずつ」「ゆっくり」
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+【プラン2】style: "wayfinder"
+styleLabel: "Wayfinder"
+styleEmoji: "🧭"
+philosophy: 納得と理解を積み重ねる。自分の地図を自分で描く。
+tagline: 正解より納得を。本物の力をつける旅。
+
+期間ルール:
+- ユーザー希望期間（${durationDays}日）をそのまま recommendedDays に設定する。
+- なぜこれをやるかの理由を各ステップに含める。
+- 理解を深める「深掘りステップ」を必ず1つ入れる。
+- 禁止ワード：「効率」「最短」「ショートカット」
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+【プラン3】style: "flow_state"
+styleLabel: "Flow State"
+styleEmoji: "🌊"
+philosophy: 毎日15分でも続く習慣に変換する。AIと道具を賢く使い、消耗しない。
+tagline: 頑張らずに、仕組みで進む。
+
+期間ルール:
+- ユーザー希望期間より長くして良い（最大1.5倍まで）。
+- 1日の負荷を最小にするために必要な日数を recommendedDays に設定する。
+- 必ず「AIツール・アプリ・自動化など、人間の努力を代替する賢いショートカット」を1ステップ以上含めること。
+- 禁止ワード：「集中して」「まとめて」「一気に」
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+出力ルール:
+- 3つのプランは明確に性格が違うこと
+- recommendedDays には各プランの哲学に基づいた最適日数を数値で入れること
+- daysComment には期間の根拠や励ましを1文で入れること
 - 日本語で出力
+- JSONのみを出力し、解説などは含めないこと
 `;
 
     const response = await ai.models.generateContent({
@@ -38,34 +118,20 @@ export async function POST(req: Request) {
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            goal: {
-              type: Type.STRING,
-            },
-            summary: {
-              type: Type.STRING,
-            },
-            steps: {
+            plans: {
               type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  scheduledDay: { type: Type.INTEGER },
-                },
-                required: ["title", "description", "scheduledDay"],
-              },
+              items: planSchema,
             },
           },
-          required: ["goal", "summary", "steps"],
+          required: ["plans"],
         },
       },
     });
 
     const text = response.text;
-    const plan = JSON.parse(text);
+    const data = JSON.parse(text);
 
-    return Response.json(plan);
+    return Response.json(data);
   } catch (error) {
     console.error(error);
     return Response.json(

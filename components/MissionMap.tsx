@@ -33,6 +33,38 @@ export default function MissionMap({
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const router = useRouter();
+  // stateに編集中のステップIDを追加
+const [editingStepId, setEditingStepId] = useState<string | null>(null);
+const [editTitle, setEditTitle] = useState("");
+const [editDescription, setEditDescription] = useState("");
+
+// 編集開始
+const handleEditStart = (step: Step) => {
+  setEditingStepId(step.id);
+  setEditTitle(step.title);
+  setEditDescription(step.description);
+};
+
+// 編集保存
+const handleEditSave = async (stepId: string) => {
+  const updatedSteps = localSteps.map((step) =>
+    step.id === stepId
+      ? { ...step, title: editTitle, description: editDescription }
+      : step
+  );
+  setLocalSteps(updatedSteps);
+  setEditingStepId(null);
+
+  try {
+    await fetch("/api/update-steps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routeId, steps: updatedSteps }),
+    });
+  } catch (error) {
+    console.error("編集の保存に失敗しました", error);
+  }
+};
 
   const currentProgress =
     localSteps.length === 0
@@ -122,6 +154,7 @@ export default function MissionMap({
         </div>
 
         <div className="space-y-4">
+          <div className="space-y-4">
           {localSteps.map((step) => (
             <div
               key={step.id}
@@ -131,35 +164,77 @@ export default function MissionMap({
                   : "border-orange-200 bg-white"
               }`}
             >
-              <div className="mb-2 flex items-start gap-3">
+              <div className="flex items-start gap-3">
                 <input
                   type="checkbox"
                   checked={step.done}
-                  disabled={loading}
+                  disabled={loading || editingStepId === step.id}
                   onChange={() => handleToggle(step.id)}
                   className="mt-1 h-5 w-5"
                 />
-                <div>
+                <div className="flex-1">
                   <p className="text-sm font-semibold text-orange-600">
                     Day {step.scheduledDay}
                   </p>
-                  <h3
-                    className={`text-lg font-bold ${
-                      step.done ? "line-through text-gray-500" : ""
-                    }`}
-                  >
-                    {step.title}
-                  </h3>
-                  <p className={step.done ? "text-gray-500" : "text-gray-700"}>
-                    {step.description}
-                  </p>
-                  <p className="mt-1 text-sm">
-                    状態: {step.done ? "完了" : "未完了"}
-                  </p>
+
+                  {editingStepId === step.id ? (
+                    // --- 編集モード：入力欄を表示 ---
+                    <div className="mt-1 space-y-2">
+                      <input
+                        type="text"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        className="w-full rounded-lg border border-orange-300 p-2 text-sm font-bold focus:outline-none"
+                      />
+                      <textarea
+                        value={editDescription}
+                        onChange={(e) => setEditDescription(e.target.value)}
+                        className="w-full rounded-lg border border-orange-200 p-2 text-sm focus:outline-none"
+                        rows={2}
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleEditSave(step.id)}
+                          className="rounded-lg bg-orange-500 px-3 py-1 text-sm font-bold text-white shadow-sm"
+                        >
+                          保存
+                        </button>
+                        <button
+                          onClick={() => setEditingStepId(null)}
+                          className="rounded-lg bg-gray-200 px-3 py-1 text-sm text-gray-600"
+                        >
+                          キャンセル
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    // --- 表示モード：テキストを表示 ---
+                    <div className="mt-1">
+                      <h3
+                        className={`text-lg font-bold ${
+                          step.done ? "line-through text-gray-500" : ""
+                        }`}
+                      >
+                        {step.title}
+                      </h3>
+                      <p className={step.done ? "text-gray-500" : "text-gray-700"}>
+                        {step.description}
+                      </p>
+                      {!step.done && (
+                        <button
+                          onClick={() => handleEditStart(step)}
+                          className="mt-2 text-xs text-gray-400 underline hover:text-orange-500"
+                        >
+                          編集する
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           ))}
+        </div>
         </div>
 
         <div className="mt-8 flex flex-col items-center gap-4">
