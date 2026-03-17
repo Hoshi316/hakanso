@@ -83,3 +83,16 @@ export async function getUserLogs(userId: string) {
     ...doc.data()
   })) as any[];
 }
+
+export async function getUserRoutes(userId: string) {
+  const q = query(
+    collection(db, "routes"),
+    where("userId", "==", userId),
+    orderBy("createdAt", "desc")
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((doc) => ({
+    id: doc.id,
+    ...(doc.data() as RouteDoc),
+  }));
+}

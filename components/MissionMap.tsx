@@ -252,6 +252,13 @@ const handleEditSave = async (stepId: string) => {
           >
             果樹園（Garden）へ向かう
           </Link>
+          <Link
+          href="/history"
+          className="rounded-xl bg-amber-100 px-6 py-3 font-bold text-amber-700 shadow transition hover:bg-amber-200"
+          >
+            📜 旅の記録を見る
+            </Link>
+          
         </div>
       </div>
     </main>
