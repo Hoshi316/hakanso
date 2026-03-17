@@ -76,7 +76,7 @@ function StepCard({
       ref={ref}
       className="relative flex items-center py-5"
       style={{
-        opacity: visible ? (unlocked ? 1 : 0.9) : 0,
+        opacity: visible ? (unlocked ? 1 : 0.4) : 0,
         transform: visible
           ? `scaleX(${depthScale}) translateY(0)`
           : `scaleX(${depthScale}) translateY(28px)`,
@@ -144,13 +144,13 @@ function StepCard({
           ) : (
             <>
               <h3 className={`text-sm font-black leading-snug ${
-                step.done ? "text-sky-400 line-through" : unlocked ? "text-sky-900" : "text-sky-300"
-              }`}>
+                  step.done ? "text-sky-400 line-through" : "text-sky-900"
+                }`}>
                 {step.title}
               </h3>
               <p className={`mt-1 text-xs leading-relaxed ${
-                step.done ? "text-sky-400" : "text-sky-700"
-                }`}>
+                step.done ? "text-sky-400" : unlocked ? "text-sky-600" : "text-sky-300"
+              }`}>
                 {step.description}
               </p>
               <div className="mt-3 flex items-center justify-between">
@@ -189,20 +189,21 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
   const [editDescription, setEditDescription] = useState("");
   const headerRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [headerH, setHeaderH] = useState(160);
   const [footerH, setFooterH] = useState(180);
   const router = useRouter();
 
   // ヘッダー・フッターの高さを実測
   useEffect(() => {
-    const updateSizes = () => {
-      if (headerRef.current) setHeaderH(headerRef.current.offsetHeight);
-      if (footerRef.current) setFooterH(footerRef.current.offsetHeight);
-    };
-    updateSizes();
-    window.addEventListener("resize", updateSizes);
-    return () => window.removeEventListener("resize", updateSizes);
-  }, []);
+  const el = scrollRef.current;
+  if (!el) return;
+  // 描画完了後に一番下へ
+  const timer = setTimeout(() => {
+    el.scrollTop = el.scrollHeight;
+  }, 100);
+  return () => clearTimeout(timer);
+}, []);
 
   const sortedAsc = [...localSteps].sort((a, b) => a.scheduledDay - b.scheduledDay);
   const sortedSteps = [...sortedAsc].reverse();
@@ -358,6 +359,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
           ヘッダーとフッターの高さ分だけpaddingを確保
       ══════════════════════════════════ */}
       <div
+        ref={scrollRef}
         className="absolute inset-0 overflow-y-auto"
         style={{
           paddingTop: `${headerH + 48}px`,

@@ -101,3 +101,16 @@ export async function deleteUserLog(logId: string) {
   const logRef = doc(db, "logs", logId);
   await deleteDoc(logRef);
 }
+
+export async function getActiveRoutes(userId: string) {
+  const q = query(
+    collection(db, "routes"),
+    where("userId", "==", userId),
+    orderBy("createdAt", "desc")
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((doc) => ({
+    id: doc.id,
+    ...(doc.data() as RouteDoc),
+  }));
+}
