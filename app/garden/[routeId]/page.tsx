@@ -251,6 +251,10 @@ const handleHarvest = async () => {
           <span className="text-2xl">📦</span>
           <span className="text-[10px] font-black text-slate-400">貯蔵庫</span>
         </Link>
+<Link href="/history" className="flex flex-col items-center gap-1">
+  <span className="text-2xl">📜</span>
+  <span className="text-[10px] font-black text-slate-400">履歴</span>
+</Link>
       </footer>
 
       {showModal && <HarvestModal variety={variety} onClose={handleCloseModal} />}
