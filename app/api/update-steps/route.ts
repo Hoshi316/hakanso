@@ -2,7 +2,7 @@ import { updateStepDone } from "@/lib/firestore";
 
 export async function POST(req: Request) {
   try {
-    const { routeId, steps } = await req.json();
+    const { routeId, steps, feedback } = await req.json();
 
     if (!routeId || !steps) {
       return Response.json(
@@ -13,6 +13,13 @@ export async function POST(req: Request) {
 
     await updateStepDone(routeId, steps);
 
+    if (feedback) {
+  const { db } = await import("@/lib/firebase");
+  const { doc, updateDoc, arrayUnion } = await import("firebase/firestore");
+  await updateDoc(doc(db, "routes", routeId), {
+    stepFeedbacks: arrayUnion({ ...feedback, completedAt: new Date().toISOString() })
+  });
+}
     return Response.json({ success: true });
   } catch (error) {
     console.error(error);

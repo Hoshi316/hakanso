@@ -10,7 +10,29 @@ const ai = new GoogleGenAI({
 
 export async function POST(req: Request) {
   try {
-    const { goal, durationDays, message } = await req.json();
+    const { goal, durationDays, message, userId } = await req.json();
+
+    // ↓ ここから追加
+let feedbackContext = "";
+if (userId) {
+  try {
+    const { db } = await import("@/lib/firebase");
+    const { collection, query, where, getDocs } = await import("firebase/firestore");
+    const snap = await getDocs(query(collection(db, "routes"), where("userId", "==", userId)));
+    const allFeedbacks = snap.docs.flatMap(d => d.data().stepFeedbacks || []);
+    if (allFeedbacks.length > 0) {
+      const avgDiff = (allFeedbacks.reduce((s: number, f: any) => s + f.difficulty, 0) / allFeedbacks.length).toFixed(1);
+      const hardMemos = allFeedbacks.filter((f: any) => f.difficulty >= 4 && f.memo).map((f: any) => `"${f.memo}"`).slice(0, 3).join(", ");
+      feedbackContext = `
+【このユーザーの過去の学習傾向（参考にしてプランを調整してください）】
+- ステップの平均難易度: ${avgDiff}/5
+- 難しいと感じた時のメモ: ${hardMemos || "なし"}
+→ 難易度が高い場合はステップをより細かく分割し、低い場合は密度を上げてください。
+`;
+    }
+  } catch(e) { console.warn("フィードバック取得失敗:", e); }
+}
+
 
     if (!goal || !durationDays) {
       return Response.json(
@@ -53,6 +75,7 @@ export async function POST(req: Request) {
 目標: ${goal}
 ユーザー希望期間(日): ${durationDays}
 メッセージ: ${message ?? "なし"}
+${feedbackContext} 
 
 ${searchContext ? `【Google検索で得た最新情報】
 ${searchContext}

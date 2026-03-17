@@ -100,7 +100,7 @@ export default function Home() {
       const res = await fetch("/api/generate-plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal, durationDays, message }),
+        body: JSON.stringify({ goal, durationDays, message, userId: user.uid }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "プラン生成に失敗しました");
