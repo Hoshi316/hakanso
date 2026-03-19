@@ -9,8 +9,8 @@ const ai = new GoogleGenAI({
 const stepSchema = {
   type: Type.OBJECT,
   properties: {
-    title:        { type: Type.STRING },
-    description:  { type: Type.STRING },
+    title:        { type: Type.STRING, description: "15文字以内" },
+    description:  { type: Type.STRING, description: "40文字以内" },
     scheduledDay: { type: Type.INTEGER },
   },
   required: ["title", "description", "scheduledDay"],
@@ -139,10 +139,23 @@ recommendationMessage: 推薦理由を「ユーザーの状況に寄り添った
   毎日小さく積み上げる方が、きっと最後まで走り切れると思います。」
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-出力ルール:
+出力ルール（厳守）:
 - 3つのプランは明確に性格が違うこと
 - 日本語で出力
 - JSONのみを出力すること
+
+【文字数制限 - これを最優先で守ること】
+- philosophy: 20文字以内
+- tagline: 20文字以内
+- suitableFor: 30文字以内
+- tradeoff: 30文字以内
+- daysComment: 25文字以内
+- summary: 40文字以内
+- recommendationMessage: 60文字以内
+- steps.title: 15文字以内
+- steps.description: 40文字以内
+
+長い文章は必ず削れ。無駄な情報を削ぎ落とすことがこのプランナーの美学である。
 `;
 
     const response = await ai.models.generateContent({

@@ -254,81 +254,75 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── 進行中・過去のルート ── */}
+        {/* ── 進行中の旅（カルーセル） ── */}
         {user && !editablePlans && (
           <div className="mt-6">
             {routesLoading ? (
               <div className="flex justify-center py-6">
                 <div className="h-6 w-6 animate-spin rounded-full border-2 border-orange-400 border-t-transparent" />
               </div>
-            ) : activeRoutes.length > 0 ? (
-              <div className="rounded-2xl border border-orange-200 bg-white p-5 shadow-sm">
-                <h2 className="mb-4 flex items-center gap-2 font-bold text-gray-700">
-                  <span>🗺️</span>
-                  <span>あなたの旅</span>
-                  <Link href="/history" className="ml-auto text-xs font-normal text-orange-400 underline">
-                    すべて見る
+            ) : activeRoutes.filter(r => r.progress < 100).length > 0 ? (
+              <>
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="font-bold text-gray-700">🚶 進行中の旅</h2>
+                  <Link href="/history" className="text-xs text-orange-400 underline">
+                    すべて見る →
                   </Link>
-                </h2>
-                <div className="space-y-3">
-                  {/* ── 進行中の旅（カルーセル） ── */}
-{user && !editablePlans && activeRoutes.filter(r => r.progress < 100).length > 0 && (
-  <div className="mt-6">
-    <div className="mb-3 flex items-center justify-between">
-      <h2 className="font-bold text-gray-700">🚶 進行中の旅</h2>
-      <Link href="/history" className="text-xs text-orange-400 underline">
-        すべて見る →
-      </Link>
-    </div>
-
-    {/* 横スクロールカルーセル */}
-    <div className="flex gap-3 overflow-x-auto pb-2 -mx-2 px-2"
-      style={{ scrollSnapType: "x mandatory" }}
-    >
-      {activeRoutes
-        .filter(r => r.progress < 100)
-        .slice(0, 5)
-        .map((route) => {
-          const completedCount = route.steps.filter((s) => s.done).length;
-          return (
-            <div
-              key={route.id}
-              className="shrink-0 w-64 rounded-2xl border border-orange-200 bg-white p-4 shadow-sm"
-              style={{ scrollSnapAlign: "start" }}
-            >
-              <p className="mb-1 text-xs font-bold text-orange-400 truncate">{route.goal}</p>
-              <div className="mb-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
-                <div
-                  className="h-full rounded-full bg-orange-400"
-                  style={{ width: `${route.progress}%` }}
-                />
-              </div>
-              <p className="mb-3 text-xs text-gray-400">
-                {completedCount}/{route.steps.length} ステップ　{route.progress}%
-              </p>
-              <div className="flex gap-2">
-                <Link
-                  href={`/map/${route.id}`}
-                  className="flex-1 rounded-lg bg-orange-500 py-1.5 text-center text-xs font-bold text-white"
-                >
-                  🗺️ マップ
-                </Link>
-                <Link
-                  href={`/garden/${route.id}`}
-                  className="flex-1 rounded-lg bg-emerald-500 py-1.5 text-center text-xs font-bold text-white"
-                >
-                  🍎 農園
-                </Link>
-              </div>
-            </div>
-          );
-        })}
-    </div>
-  </div>
-)}
                 </div>
+                <div
+                  className="flex gap-3 overflow-x-auto pb-3 -mx-2 px-2"
+                  style={{ scrollSnapType: "x mandatory" }}
+                >
+                  {activeRoutes
+                    .filter(r => r.progress < 100)
+                    .slice(0, 5)
+                    .map((route) => {
+                      const completedCount = route.steps.filter((s) => s.done).length;
+                      return (
+                        <div
+                          key={route.id}
+                          className="shrink-0 w-64 rounded-2xl border border-orange-200 bg-white p-4 shadow-sm"
+                          style={{ scrollSnapAlign: "start" }}
+                        >
+                          <p className="mb-2 text-sm font-bold text-gray-800 line-clamp-2 leading-snug">
+                            {route.goal}
+                          </p>
+                          <div className="mb-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+                            <div
+                              className="h-full rounded-full bg-orange-400 transition-all"
+                              style={{ width: `${route.progress}%` }}
+                            />
+                          </div>
+                          <p className="mb-3 text-xs text-gray-400">
+                            {completedCount}/{route.steps.length} ステップ完了　{route.progress}%
+                          </p>
+                          <div className="flex gap-2">
+                            <Link
+                              href={`/map/${route.id}`}
+                              className="flex-1 rounded-lg bg-orange-500 py-1.5 text-center text-xs font-bold text-white transition hover:bg-orange-600"
+                            >
+                              🗺️ マップ
+                            </Link>
+                            <Link
+                              href={`/garden/${route.id}`}
+                              className="flex-1 rounded-lg bg-emerald-500 py-1.5 text-center text-xs font-bold text-white transition hover:bg-emerald-600"
+                            >
+                              🍎 農園
+                            </Link>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-orange-200 bg-white p-4 text-center">
+                <p className="text-sm text-gray-400">進行中の旅はありません</p>
+                <Link href="/history" className="mt-1 inline-block text-xs text-orange-400 underline">
+                  過去の旅を見る
+                </Link>
               </div>
-            ) : null}
+            )}
           </div>
         )}
 
@@ -409,7 +403,10 @@ export default function Home() {
                     <div className="mb-4 space-y-2">
                       <p className="text-xs font-bold text-gray-500">✏️ ステップを編集できます（保存前に調整可）</p>
                       {plan.steps.map((step, stepIndex) => (
-                        <div key={stepIndex} className={`rounded-xl border p-3 ${config.editBg}`}>
+                        <div
+                          key={stepIndex}
+                          className={`rounded-xl border p-3 min-h-[80px] flex flex-col justify-between ${config.editBg}`}
+                        >
                           {step._editing ? (
                             <div className="space-y-2">
                               <div className="flex items-center gap-2">
@@ -437,22 +434,36 @@ export default function Home() {
                                 rows={2}
                                 placeholder="ステップの説明"
                               />
-                              <button onClick={() => toggleEditStep(plan.style, stepIndex)} className="rounded-lg bg-gray-700 px-3 py-1 text-xs font-bold text-white">
+                              <button
+                                onClick={() => toggleEditStep(plan.style, stepIndex)}
+                                className="rounded-lg bg-gray-700 px-3 py-1 text-xs font-bold text-white"
+                              >
                                 確定
                               </button>
                             </div>
                           ) : (
                             <div className="flex items-start justify-between gap-2">
-                              <div className="flex-1">
+                              <div className="flex-1 min-w-0">
                                 <p className="text-xs font-bold text-gray-400">Day {step.scheduledDay}</p>
-                                <p className="text-sm font-bold text-gray-800">{step.title}</p>
-                                <p className="text-xs text-gray-500">{step.description}</p>
+                                <p className="text-sm font-bold text-gray-800 truncate">
+                                  {step.title}
+                                </p>
+                                <div className="group relative">
+                                  <p className="text-xs text-gray-500 line-clamp-2">
+                                    {step.description}
+                                  </p>
+                                  {step.description.length > 40 && (
+                                    <div className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-64 rounded-xl border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-xl group-hover:block animate-in fade-in zoom-in duration-200">
+                                      {step.description}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                               <button
                                 onClick={() => toggleEditStep(plan.style, stepIndex)}
                                 className="shrink-0 rounded-lg bg-white/80 px-2 py-1 text-xs text-gray-400 hover:text-gray-700 border border-gray-200"
                               >
-                                ✏️ 編集
+                                ✏️
                               </button>
                             </div>
                           )}
