@@ -9,4 +9,5 @@ export type LogDoc = {
   comment: string;
   createdAt: string;
   variety: 'sun' | 'moon' | 'midnight' | 'forest' | 'rare'; // ★これを追加
+  source?: 'garden' | 'step';
 };

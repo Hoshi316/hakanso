@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { auth } from "@/lib/firebase"; // ★ 追加
-import { onAuthStateChanged, User } from "firebase/auth"; // ★ 追加
+import { auth } from "@/lib/firebase"; 
+import { onAuthStateChanged, User } from "firebase/auth"; 
 import { exportToGoogleTasks } from "@/lib/googleTasks";
 import { getGoogleTasksAccessToken } from "@/lib/auth";
 
@@ -24,7 +24,7 @@ type Props = {
   steps: Step[];
 };
 
-// --- StepCard コンポーネント (既存のまま) ---
+// --- StepCard コンポーネント ---
 function StepCard({ step, index, total, unlocked, loading, editingStepId, editTitle, editDescription, onToggle, onEditStart, onEditSave, onEditCancel, onEditTitleChange, onEditDescriptionChange }: any) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
@@ -82,7 +82,7 @@ function StepCard({ step, index, total, unlocked, loading, editingStepId, editTi
 
 // --- MissionMap メインコンポーネント ---
 export default function MissionMap({ routeId, goal, summary, progress, steps }: Props) {
-  const [user, setUser] = useState<User | null>(null); // ★ ユーザー情報を追加
+  const [user, setUser] = useState<User | null>(null);
   const [localSteps, setLocalSteps] = useState(steps);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -92,15 +92,19 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
   const [headerH, setHeaderH] = useState(160);
   const [footerH, setFooterH] = useState(180);
   
-  // ★ フィードバック用
+  // フィードバック用
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [pendingStep, setPendingStep] = useState<Step | null>(null);
   const [feedbackData, setFeedbackData] = useState({ difficulty: 3, feeling: "まあまあ", memo: "", energy: 3 });
 
+  // 100%達成リザルト用
+  const [showDiagnosis, setShowDiagnosis] = useState(false);
+  const [diagnosisText, setDiagnosisText] = useState("");
+  const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+
   const router = useRouter();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // ログイン監視
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
     return () => unsubscribe();
@@ -112,6 +116,42 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
     setTimeout(() => { el.scrollTop = el.scrollHeight; }, 100);
   }, []);
 
+  // ★ 診断取得用 useEffect
+  useEffect(() => {
+    if (!showDiagnosis) return;
+    async function fetchDiagnosis() {
+      setDiagnosisLoading(true);
+      try {
+        // 1. 最新のルート情報とフィードバックを取得
+        const routeRes = await fetch(`/api/get-route?routeId=${routeId}`);
+        const routeData = await routeRes.json();
+
+        // 2. 過去の全リンゴ（感情ログ）を取得
+        const logsRes = await fetch(`/api/get-user-logs?userId=${user?.uid}&routeId=${routeId}`);
+        const logsData = await logsRes.json();
+
+        // 3. AIに診断を依頼
+        const res = await fetch("/api/completion-diagnosis", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            routeId,
+            goal,
+            appleLogs: logsData.logs || [],
+            stepFeedbacks: routeData.stepFeedbacks || [],
+          }),
+        });
+        const data = await res.json();
+        setDiagnosisText(data.diagnosis);
+      } catch (e) {
+        setDiagnosisText("旅の診断中にエラーが発生しました。ですが、あなたの努力は本物です！");
+      } finally {
+        setDiagnosisLoading(false);
+      }
+    }
+    fetchDiagnosis();
+  }, [showDiagnosis, routeId, goal, user]);
+
   const sortedAsc = [...localSteps].sort((a, b) => a.scheduledDay - b.scheduledDay);
   const sortedSteps = [...sortedAsc].reverse();
   const currentProgress = localSteps.length === 0 ? 0 : Math.round((localSteps.filter((s) => s.done).length / localSteps.length) * 100);
@@ -122,23 +162,17 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
     return sortedAsc[idx - 1].done;
   };
 
-  // ★ トグル処理を改造
   const handleToggle = async (stepId: string) => {
     if (!isUnlocked(stepId)) return;
     const target = localSteps.find(s => s.id === stepId);
-    
-    // チェックを入れる（未完了→完了）時だけモーダルを出す
     if (target && !target.done) {
       setPendingStep(target);
       setShowFeedbackModal(true);
       return;
     }
-
-    // チェックを外す時はそのまま実行
     await executeUpdate(stepId, false);
   };
 
-  // API更新の実行部分
   const executeUpdate = async (stepId: string, isDone: boolean, feedback?: any) => {
     const updated = localSteps.map((s) => s.id === stepId ? { ...s, done: isDone } : s);
     setLocalSteps(updated);
@@ -150,15 +184,20 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
         body: JSON.stringify({ 
           routeId, 
           steps: updated, 
-          userId: user?.uid, // ★ 分析用にユーザーIDを送る
-          goal, // ★ ログの名前に使うために目標名も送る
+          userId: user?.uid,
+          goal,
           feedback: feedback || null 
         }),
       });
-      if (!res.ok) throw new Error("更新失敗");
-      router.refresh();
+      
+      const newProgress = Math.round((updated.filter(s => s.done).length / updated.length) * 100);
+      
+      if (newProgress === 100 && isDone) {
+        setShowDiagnosis(true); // ★ 100%達成時にリザルト発動
+      } else {
+        router.refresh();
+      }
     } catch (e) {
-      console.error(e);
       alert("更新に失敗しました");
     } finally {
       setLoading(false);
@@ -166,14 +205,74 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
     }
   };
 
-  const handleFeedbackSubmit = () => {
-    if (!pendingStep) return;
-    executeUpdate(pendingStep.id, true, {
-      stepId: pendingStep.id,
-      stepTitle: pendingStep.title,
-      ...feedbackData
+  const handleFeedbackSubmit = async () => {
+  if (!pendingStep) return;
+  setShowFeedbackModal(false);
+  const updated = localSteps.map(s => s.id === pendingStep.id ? {...s, done: true} : s);
+  setLocalSteps(updated);
+  setLoading(true);
+  try {
+    await fetch("/api/update-steps", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        routeId,
+        steps: updated,
+        feedback: { stepId: pendingStep.id, stepTitle: pendingStep.title, ...feedbackData }
+      })
     });
-    setFeedbackData({ difficulty: 3, feeling: "まあまあ", memo: "", energy: 3 });
+
+    const varietyMap: Record<number, string> = {
+      1: "forest", 2: "moon", 3: "midnight", 4: "sun", 5: "rare"
+    };
+    const variety = varietyMap[feedbackData.difficulty] || "forest";
+
+    // ログインユーザーのIDを取得するためにFirebase authをインポート
+    const { auth } = await import("@/lib/firebase");
+    const currentUser = auth.currentUser;
+
+    if (currentUser) {
+      await fetch("/api/save-log", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          userId: currentUser.uid,
+          routeId,
+          routeName: goal,
+          moodScore: feedbackData.energy ?? feedbackData.difficulty,
+          note: feedbackData.memo || `「${pendingStep.title}」を完了`,
+          variety,
+          comment: `難易度: ${["簡単","やや簡単","普通","やや難しい","難しい"][feedbackData.difficulty - 1]} / ${feedbackData.feeling}`,
+          source: 'step',
+        })
+      });
+    }
+
+    // 100%チェックを先に行う
+    const newProgress = Math.round(
+      (updated.filter(s => s.done).length / updated.length) * 100
+    );
+
+    if (newProgress === 100) {
+      setShowDiagnosis(true);
+      // 100%の時はrefreshしない（モーダルが消えるため）
+    } else {
+      router.refresh();
+    }
+
+  } catch (e) {
+    console.error(e);
+    alert("更新に失敗しました");
+  } finally {
+    setLoading(false);
+  }
+  setFeedbackData({ difficulty: 3, feeling: "まあまあ", memo: "", energy: 3 });
+};
+
+  const handleEditStart = (step: Step) => {
+    setEditingStepId(step.id);
+    setEditTitle(step.title);
+    setEditDescription(step.description);
   };
 
   const handleEditSave = async (stepId: string) => {
@@ -190,10 +289,10 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
     setExporting(true);
     try {
       const token = await getGoogleTasksAccessToken();
-      if (!token) throw new Error("トークンを取得できませんでした");
+      if (!token) throw new Error("トークンなし");
       await exportToGoogleTasks(token, goal, localSteps);
       alert(`「Route & Root: ${goal}」を Google Tasks に書き出しました`);
-    } catch (e) { alert(e instanceof Error ? e.message : "書き出しに失敗しました"); } finally { setExporting(false); }
+    } catch (e) { alert("書き出し失敗"); } finally { setExporting(false); }
   };
 
   return (
@@ -210,7 +309,6 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
             <div className="h-2 w-full overflow-hidden rounded-full bg-sky-200"><div className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-400 transition-all duration-700" style={{ width: `${currentProgress}%` }} /></div>
           </div>
         </div>
-        <div className="pointer-events-none absolute bottom-0 left-0 right-0 translate-y-full" style={{ height: "48px", background: "linear-gradient(to bottom, #e0f2fe, transparent)" }} />
       </div>
 
       {/* 2. タスクリスト */}
@@ -228,41 +326,65 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
       {/* 3. フッター */}
       <div className="fixed bottom-0 left-0 right-0 z-30 px-4 pb-6 pt-4" style={{ background: "linear-gradient(to top, #ffffff 60%, transparent)" }}>
         <div className="mx-auto flex max-w-sm flex-col gap-3">
-          <button onClick={handleExport} disabled={exporting} className="w-full rounded-xl bg-blue-500 py-3 font-bold text-white transition hover:bg-blue-600 disabled:opacity-50">{exporting ? "書き出し中..." : "Google Tasks に書き出す"}</button>
+          <button onClick={handleExport} disabled={exporting} className="w-full rounded-xl bg-blue-500 py-3 font-bold text-white disabled:opacity-50">{exporting ? "書き出し中..." : "Google Tasks に書き出す"}</button>
           <Link href={`/garden/${routeId}`} className="w-full rounded-xl bg-emerald-500 py-3 text-center font-bold text-white transition hover:bg-emerald-600">果樹園（Garden）へ向かう 🍎</Link>
-          <Link href="/history" className="w-full rounded-xl bg-sky-100 py-3 text-center font-bold text-sky-600 transition hover:bg-sky-200">📜 旅の記録を見る</Link>
+          <Link href="/history" className="w-full rounded-xl bg-sky-100 py-3 text-center font-bold text-sky-600">📜 旅の記録を見る</Link>
         </div>
       </div>
 
-      {/* ★ 4. フィードバックモーダル (必ず return 内、一番最後、高 z-index) ★ */}
+      {/* 4. フィードバックモーダル */}
       {showFeedbackModal && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:"16px" }}>
           <div style={{ background:"#ffffff", borderRadius:"24px", padding:"28px 24px", maxWidth:"380px", width:"100%", boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
             <div style={{textAlign:"center", marginBottom:"20px"}}>
               <div style={{fontSize:"32px", marginBottom:"8px"}}>✅</div>
-              <p style={{fontSize:"11px", color:"#94a3b8", marginBottom:"4px", textTransform:"uppercase"}}>ステップ完了</p>
-              <p style={{fontSize:"15px", fontWeight:600, color:"#1e293b"}}>{pendingStep?.title}</p>
+              <p style={{fontSize:"11px", color:"#94a3b8", textTransform:"uppercase"}}>ステップ完了</p>
+              <p style={{fontSize:"15px", fontWeight:600}}>{pendingStep?.title}</p>
             </div>
-
-            <p style={{fontSize:"12px", fontWeight:600, color:"#64748b", marginBottom:"10px"}}>難易度はどうでしたか？</p>
+            <p style={{fontSize:"12px", fontWeight:600, color:"#64748b", marginBottom:"10px"}}>難易度</p>
             <div style={{display:"flex", gap:"6px", marginBottom:"20px"}}>
-              {["😌 易", "🙂 普", "😤 難", "😵 激"].map((label, i) => (
-                <button key={i} onClick={() => setFeedbackData(p => ({...p, difficulty: i+1}))} style={{ flex:1, padding:"8px 0", borderRadius:"12px", border: feedbackData.difficulty === i+1 ? "2px solid #3b82f6" : "2px solid #e2e8f0", background: feedbackData.difficulty === i+1 ? "#eff6ff" : "#f8fafc", fontSize:"10px" }}>{label}</button>
+              {["😌", "🙂", "😐", "😤", "😵"].map((label, i) => (
+                <button key={i} onClick={() => setFeedbackData(p => ({...p, difficulty: i+1}))} style={{ flex:1, padding:"8px 0", borderRadius:"12px", border: feedbackData.difficulty === i+1 ? "2px solid #3b82f6" : "2px solid #e2e8f0", background: feedbackData.difficulty === i+1 ? "#eff6ff" : "#f8fafc" }}>{label}</button>
               ))}
             </div>
-
-            <p style={{fontSize:"12px", fontWeight:600, color:"#64748b", marginBottom:"10px"}}>やる気レベル: <span style={{color:"#f97316"}}>Lv.{feedbackData.energy}</span></p>
+            <p style={{fontSize:"12px", fontWeight:600, color:"#64748b", marginBottom:"10px"}}>やる気: <span style={{color:"#f97316"}}>Lv.{feedbackData.energy}</span></p>
             <input type="range" min="1" max="5" value={feedbackData.energy} onChange={e => setFeedbackData(p => ({...p, energy: Number(e.target.value)}))} style={{width:"100%", accentColor:"#f97316", marginBottom:"20px"}} />
-
             <textarea placeholder="メモ（任意）" value={feedbackData.memo} onChange={e => setFeedbackData(p => ({...p, memo: e.target.value}))} style={{ width:"100%", padding:"12px", borderRadius:"12px", border:"2px solid #e2e8f0", background:"#f8fafc", fontSize:"13px", height:"80px", marginBottom:"20px", resize:"none" }} />
-
             <div style={{display:"flex", gap:"8px"}}>
-              <button onClick={() => setShowFeedbackModal(false)} style={{flex:1, padding:"12px", borderRadius:"12px", border:"2px solid #e2e8f0", fontSize:"13px"}}>戻る</button>
-              <button onClick={handleFeedbackSubmit} style={{flex:2, padding:"12px", borderRadius:"12px", background:"#3b82f6", color:"white", fontWeight:700, fontSize:"13px"}}>完了して記録する 🍎</button>
+              <button onClick={() => setShowFeedbackModal(false)} style={{flex:1, padding:"12px", borderRadius:"12px", border:"2px solid #e2e8f0"}}>戻る</button>
+              <button onClick={handleFeedbackSubmit} style={{flex:2, padding:"12px", borderRadius:"12px", background:"#3b82f6", color:"white", fontWeight:700}}>完了して記録 🍎</button>
             </div>
           </div>
         </div>
       )}
+
+      {/* 5. 目標達成リザルト診断モーダル */}
+      {showDiagnosis && (
+        <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:110, display:"flex", alignItems:"center", justifyContent:"center", padding:"16px", backdropFilter:"blur(4px)"}}>
+          <div style={{background:"#ffffff", borderRadius:"32px", padding:"32px 24px", maxWidth:"420px", width:"100%", boxShadow:"0 30px 100px rgba(0,0,0,0.5)", textAlign:"center", animation:"zoomIn 0.4s ease-out"}}>
+            <div style={{fontSize:"50px", marginBottom:"16px"}}>🏆</div>
+            <p style={{fontSize:"12px", color:"#94a3b8", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.2em"}}>Congratulation!</p>
+            <h2 style={{fontSize:"20px", fontWeight:900, color:"#1e293b", marginBottom:"24px", lineHeight:1.3}}>{goal} を完遂！</h2>
+            
+            <div style={{background:"#f8fafc", borderRadius:"24px", padding:"20px", marginBottom:"24px", textAlign:"left", border:"2px solid #eff6ff", position:"relative"}}>
+              <p style={{fontSize:"10px", fontWeight:800, color:"#3b82f6", marginBottom:"10px", textTransform:"uppercase"}}>Journey Diagnosis — 達成診断</p>
+              {diagnosisLoading ? (
+                <div style={{padding:"20px 0", textAlign:"center"}}><div className="inline-block animate-spin h-5 w-5 border-2 border-sky-500 border-t-transparent rounded-full" /><p style={{fontSize:"12px", color:"#94a3b8", marginTop:"8px"}}>AIコーチがあなたの旅を振り返り中...</p></div>
+              ) : (
+                <p style={{fontSize:"14px", color:"#334155", lineHeight:1.8, whiteSpace:"pre-wrap", fontWeight:500}}>{diagnosisText}</p>
+              )}
+            </div>
+            
+            <button type="button" onClick={() => router.push(`/collection/${routeId}`)} style={{width:"100%", padding:"16px", borderRadius:"16px", border:"none", background:"linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)", color:"#fff", fontWeight:800, fontSize:"15px", cursor:"pointer", boxShadow:"0 10px 20px rgba(37,99,235,0.3)"}}>
+              貯蔵庫で情熱の結晶を確認する 📦
+            </button>
+          </div>
+        </div>
+      )}
+
+      <style jsx>{`
+        @keyframes zoomIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+      `}</style>
     </div>
   );
 }

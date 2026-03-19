@@ -55,7 +55,7 @@ export async function POST(req: Request) {
 
     // 3. Geminiを呼び出し（Vision機能を使用）
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash", // 画像解析が得意で高速なモデル
+      model: "gemini-2.5-flash",// 画像解析が得意で高速なモデル
       contents: [{ role: "user", parts: contentParts }],
     });
 

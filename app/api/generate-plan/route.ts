@@ -6,7 +6,35 @@ const ai = new GoogleGenAI({
   location: "us-central1",
 });
 
-// ... stepSchema, planSchema は既存のまま ...
+const stepSchema = {
+  type: Type.OBJECT,
+  properties: {
+    title: { type: Type.STRING },
+    description: { type: Type.STRING },
+    scheduledDay: { type: Type.INTEGER },
+  },
+  required: ["title", "description", "scheduledDay"],
+};
+
+const planSchema = {
+  type: Type.OBJECT,
+  properties: {
+    style: { type: Type.STRING },
+    styleLabel: { type: Type.STRING },
+    styleEmoji: { type: Type.STRING },
+    philosophy: { type: Type.STRING },
+    tagline: { type: Type.STRING },
+    suitableFor: { type: Type.STRING },
+    tradeoff: { type: Type.STRING },
+    intensityLevel: { type: Type.INTEGER },
+    recommendedDays: { type: Type.INTEGER },
+    daysComment: { type: Type.STRING },
+    goal: { type: Type.STRING },
+    summary: { type: Type.STRING },
+    steps: { type: Type.ARRAY, items: stepSchema },
+  },
+  required: ["style", "styleLabel", "styleEmoji", "philosophy", "tagline", "suitableFor", "tradeoff", "intensityLevel", "recommendedDays", "daysComment", "goal", "summary", "steps"],
+};
 
 export async function POST(req: Request) {
   try {

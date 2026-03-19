@@ -4,15 +4,11 @@ import { LogDoc } from "@/types/log";
 
 export async function POST(req: Request) {
   try {
-    const { userId, routeId,routeName, moodScore, note, variety, comment ,createdAt} = await req.json();
+    const { userId, routeId, routeName, moodScore, note, variety, comment, source } = await req.json();
 
     if (!userId || !routeId || !moodScore) {
-      return Response.json(
-        { error: "userId, routeId, moodScore は必須です" },
-        { status: 400 }
-      );
+      return Response.json({ error: "userId, routeId, moodScore は必須です" }, { status: 400 });
     }
-
 
     const log: LogDoc = {
       userId,
@@ -22,24 +18,16 @@ export async function POST(req: Request) {
       variety: variety || "forest",
       routeName: routeName || "不明な旅路",
       appleColor: APPLE_COLORS[variety as AppleVariety] || "#10b981",
-      appleSize: 100, // サイズは固定にするか、型定義から消してもOK
+      appleSize: 100,
       comment: comment || "",
       createdAt: new Date().toISOString(),
+      source: source || "garden", // ← 追加
     };
 
     const logId = await saveLog(log);
-
-    return Response.json({
-      success: true,
-      logId,
-      variety: log.variety,
-      color: log.appleColor
-    });
+    return Response.json({ success: true, logId, variety: log.variety, color: log.appleColor });
   } catch (error) {
     console.error(error);
-    return Response.json(
-      { error: "感情ログの保存に失敗しました" },
-      { status: 500 }
-    );
+    return Response.json({ error: "感情ログの保存に失敗しました" }, { status: 500 });
   }
 }

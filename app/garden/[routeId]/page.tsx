@@ -30,41 +30,59 @@ export default function GardenPage({ params }: { params: Promise<{ routeId: stri
   // マルチモーダル用
   const [image, setImage] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
-  const recognitionRef = useRef<any>(null); // 音声認識用
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   const pendingCount = pendingApples.length;
   const isFull = nutrition >= 100;
 
   // 2. 音声認識のセットアップ（Web Speech API）
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.lang = 'ja-JP';
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
+  const toggleRecording = async () => {
+  if (isRecording) {
+    mediaRecorderRef.current?.stop();
+    setIsRecording(false);
+    return;
+  }
 
-      recognitionRef.current.onresult = (event: any) => {
-        let transcript = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mediaRecorder = new MediaRecorder(stream);
+    mediaRecorderRef.current = mediaRecorder;
+    audioChunksRef.current = [];
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      
+      // Base64に変換してGeminiへ
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = (reader.result as string).split(",")[1];
+        try {
+          const res = await fetch("/api/transcribe-audio", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audio: base64, mimeType: "audio/webm" }),
+          });
+          const data = await res.json();
+          if (data.text) setMemo(prev => prev + (prev ? "\n" : "") + data.text);
+        } catch (e) {
+          console.error("文字起こし失敗:", e);
         }
-        setMemo(prev => prev + transcript); // メモ欄に直接書き込む
       };
+      reader.readAsDataURL(audioBlob);
+    };
 
-      recognitionRef.current.onerror = () => setIsRecording(false);
-      recognitionRef.current.onend = () => setIsRecording(false);
-    }
-  }, []);
-
-  const toggleRecording = () => {
-    if (isRecording) {
-      recognitionRef.current?.stop();
-    } else {
-      setIsRecording(true);
-      recognitionRef.current?.start();
-    }
-  };
+    mediaRecorder.start();
+    setIsRecording(true);
+  } catch (e) {
+    alert("マイクのアクセスを許可してください");
+  }
+};
 
   // ... (ログイン・データ取得・自動保存のuseEffectなどは以前と同じ)
   useEffect(() => {
@@ -95,8 +113,11 @@ export default function GardenPage({ params }: { params: Promise<{ routeId: stri
   };
 
   const handleGiveNutrition = async () => {
-    if (isFull) return;
-    const hasInput = useMood || memo.trim() || image;
+    if (isFull) 
+      return;
+    
+    const hasInput = useMood ||
+     memo.trim() || image;
     if (!hasInput) return alert("今日の頑張りを見せてください🌱");
 
     setIsWatering(true);
@@ -135,10 +156,38 @@ export default function GardenPage({ params }: { params: Promise<{ routeId: stri
     } finally { setIsWatering(false); }
   };
 
-  const handleCloseModal = () => {
-    setShowModal(false); setPendingApples([]); setNutrition(0); setAiMessage("");
-    saveProgress(0, [], variety, true); 
-  };
+  const handleCloseModal = async () => {
+  setShowModal(false);
+  
+  // pendingApplesをlogsに保存
+  if (user && pendingApples.length > 0) {
+    try {
+      await Promise.all(pendingApples.map(apple =>
+        fetch("/api/save-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: user.uid,
+            routeId,
+            routeName,
+            moodScore: apple.moodScore || 3,
+            note: apple.note || "",
+            variety: apple.variety,
+            comment: apple.comment || "",
+            source: "garden", // ← 貯蔵庫で分類するために追加
+          })
+        })
+      ));
+    } catch (e) {
+      console.error("ログ保存失敗:", e);
+    }
+  }
+
+  setPendingApples([]);
+  setNutrition(0);
+  setAiMessage("");
+  saveProgress(0, [], variety, true);
+};
 
   let treeLevel = hasGrown ? 2 : (nutrition < 30 ? 0 : nutrition < 60 ? 1 : 2);
 
@@ -210,14 +259,14 @@ export default function GardenPage({ params }: { params: Promise<{ routeId: stri
           </div>
 
           <button 
-            onClick={handleGiveNutrition} 
+            onClick={isFull ? () => setShowModal(true) : handleGiveNutrition} 
             disabled={isWatering} 
             className="w-full py-5 text-white font-black rounded-3xl shadow-lg transition-all active:scale-95" 
             style={{ backgroundColor: APPLE_COLORS[variety] }}
           >
-            {isWatering ? "吸収中..." : isFull ? `🍎 収穫可能です！` : `養分を注ぐ (${nutrition}%) 💧`}
-          </button>
-        </div>
+           {isWatering ? "吸収中..." : isFull ? `🍎 収穫可能です！` : `養分を注ぐ (${nutrition}%) 💧`}
+</button>
+        </div>  
 
         {/* 右側：木のエフェクト（省略なし） */}
         <div className="relative overflow-hidden flex flex-col items-center justify-center bg-white p-8 rounded-[40px] shadow-xl border-4 border-emerald-100 min-h-[480px]">
@@ -248,7 +297,7 @@ export default function GardenPage({ params }: { params: Promise<{ routeId: stri
       
       <footer className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md bg-white/90 backdrop-blur-md p-4 rounded-full shadow-2xl flex justify-around items-center z-40">
         <Link href={`/map/${routeId}`} className="flex flex-col items-center gap-1">🗺️<span className="text-[10px] font-black text-slate-400">マップ</span></Link>
-        <Link href={`/collection/${user?.uid || 'guest'}?from=${routeId}`} className="flex flex-col items-center gap-1">📦<span className="text-[10px] font-black text-slate-400">貯蔵庫</span></Link>
+        <Link href={`/collection/${routeId}`} className="flex flex-col items-center gap-1">📦<span className="text-[10px] font-black text-slate-400">貯蔵庫</span></Link>
         <Link href="/history" className="flex flex-col items-center gap-1">📜<span className="text-[10px] font-black text-slate-400">履歴</span></Link>
       </footer>
       {showModal && <HarvestModal apples={pendingApples} onClose={handleCloseModal} />}

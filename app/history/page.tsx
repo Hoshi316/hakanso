@@ -138,7 +138,7 @@ export default function HistoryPage() {
                       🍎 農園へ
                     </Link>
                     <Link
-                      href={`/collection/${user.uid}?from=${route.id}`}
+                      href={`/collection/${route.id}`}
                       className="flex-1 rounded-xl bg-slate-200 py-2 text-center text-sm font-bold text-slate-600 hover:bg-slate-300 transition"
                     >
                       📦 リンゴ
