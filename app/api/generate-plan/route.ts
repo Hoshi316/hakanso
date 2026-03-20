@@ -40,36 +40,85 @@ export async function POST(req: Request) {
   try {
     const { goal, durationDays, message, userId } = await req.json();
 
-    // ↓ ここから追加
-let feedbackContext = "";
-if (userId) {
-  try {
-    const { db } = await import("@/lib/firebase");
-    const { collection, query, where, getDocs } = await import("firebase/firestore");
-    const snap = await getDocs(query(collection(db, "routes"), where("userId", "==", userId)));
-    const allFeedbacks = snap.docs.flatMap(d => d.data().stepFeedbacks || []);
-    if (allFeedbacks.length > 0) {
-      const avgDiff = (allFeedbacks.reduce((s: number, f: any) => s + f.difficulty, 0) / allFeedbacks.length).toFixed(1);
-      const hardMemos = allFeedbacks.filter((f: any) => f.difficulty >= 4 && f.memo).map((f: any) => `"${f.memo}"`).slice(0, 3).join(", ");
-      feedbackContext = `
-【このユーザーの過去の学習傾向（参考にしてプランを調整してください）】
+    if (!goal || !durationDays) {
+      return Response.json({ error: "goal と durationDays は必須です" }, { status: 400 });
+    }
+
+    // ── 過去の全フィードバックを分析 ──
+    let feedbackContext = "";
+    if (userId) {
+      try {
+        const { db } = await import("@/lib/firebase");
+        const { collection, query, where, getDocs } = await import("firebase/firestore");
+        const snap = await getDocs(query(collection(db, "routes"), where("userId", "==", userId)));
+        const allFeedbacks = snap.docs.flatMap(d => d.data().stepFeedbacks || []);
+
+        if (allFeedbacks.length > 0) {
+          const avgDiff = (allFeedbacks.reduce((s: number, f: any) => s + f.difficulty, 0) / allFeedbacks.length).toFixed(1);
+
+          const feelings = allFeedbacks.map((f: any) => f.feeling).filter(Boolean);
+          const batchiCount = feelings.filter((f: string) => f === "バッチリ").length;
+          const muzuiCount = feelings.filter((f: string) => f === "微妙").length;
+          const maaCount = feelings.filter((f: string) => f === "まあまあ").length;
+          const totalFeelings = feelings.length;
+
+          const avgEnergy = allFeedbacks.filter((f: any) => f.energy).length > 0
+            ? (allFeedbacks.reduce((s: number, f: any) => s + (f.energy || 3), 0) / allFeedbacks.length).toFixed(1)
+            : null;
+
+          const hardMemos = allFeedbacks
+            .filter((f: any) => f.difficulty >= 4 && f.memo)
+            .map((f: any) => `"${f.memo}"`)
+            .slice(0, 5)
+            .join(", ");
+
+          const easyMemos = allFeedbacks
+            .filter((f: any) => f.difficulty <= 2 && f.memo)
+            .map((f: any) => `"${f.memo}"`)
+            .slice(0, 3)
+            .join(", ");
+
+          const totalRoutes = snap.docs.length;
+          const completedRoutes = snap.docs.filter(d => d.data().progress === 100).length;
+
+          const feelingTrend = totalFeelings > 0
+            ? (batchiCount >= maaCount && batchiCount >= muzuiCount
+                ? "バッチリ（余裕があるかも）"
+                : muzuiCount >= batchiCount && muzuiCount >= maaCount
+                ? "微妙（少し詰め込みすぎかも）"
+                : "まあまあ（バランスが良い）")
+            : "データなし";
+
+          feedbackContext = `
+【このユーザーの過去の学習パターン（${totalRoutes}件のルート・${allFeedbacks.length}件のフィードバックから分析）】
+
+■ 達成状況
+- 過去のルート完了率: ${completedRoutes}/${totalRoutes}件完了
+
+■ 難易度の傾向
 - ステップの平均難易度: ${avgDiff}/5
 - 難しいと感じた時のメモ: ${hardMemos || "なし"}
-→ 難易度が高い場合はステップをより細かく分割し、低い場合は密度を上げてください。
+- 簡単すぎた時のメモ: ${easyMemos || "なし"}
+
+■ やる気・達成感の傾向
+${avgEnergy ? `- 平均やる気スコア: ${avgEnergy}/5` : ""}
+- 達成感の内訳: バッチリ ${batchiCount}回 / まあまあ ${maaCount}回 / 微妙 ${muzuiCount}回
+- 最も多い達成感: ${feelingTrend}
+
+■ このデータを踏まえたプラン調整指示（必ず反映すること）
+${Number(avgDiff) >= 4 ? "- 難易度が高め → 1ステップの量を減らし、より細かく分割すること" : ""}
+${Number(avgDiff) <= 2 ? "- 難易度が低め → もう少し密度を上げてチャレンジングにしてOK" : ""}
+${muzuiCount > batchiCount ? "- 達成感「微妙」が多い → 序盤に簡単なステップを多めに配置し、小さな成功体験を積ませること" : ""}
+${batchiCount > muzuiCount + maaCount ? "- 達成感「バッチリ」が多い → ステップ数を増やすか、1ステップの内容を充実させてOK" : ""}
+${completedRoutes === 0 ? "- まだ完了ルートがない → 短期間で達成感を得やすいプランを優先すること" : ""}
 `;
-    }
-  } catch(e) { console.warn("フィードバック取得失敗:", e); }
-}
-
-
-    if (!goal || !durationDays) {
-      return Response.json(
-        { error: "goal と durationDays は必須です" },
-        { status: 400 }
-      );
+        }
+      } catch (e) {
+        console.warn("フィードバック取得失敗:", e);
+      }
     }
 
-    // ── Step1: Google検索で最新情報を収集 ──
+    // ── Google検索で最新情報を収集 ──
     let searchContext = "";
     try {
       const searchResponse = await ai.models.generateContent({
@@ -91,11 +140,10 @@ if (userId) {
       });
       searchContext = searchResponse.text ?? "";
     } catch (e) {
-      // 検索失敗してもプラン生成は続行
       console.warn("Search grounding failed, continuing without it:", e);
     }
 
-    // ── Step2: 検索情報を注入してプラン生成 ──
+    // ── プラン生成 ──
     const prompt = `
 あなたは目標達成を支援するプランナーです。
 以下の目標に対して、哲学が全く異なる3つのプランを作成してください。
@@ -103,7 +151,8 @@ if (userId) {
 目標: ${goal}
 ユーザー希望期間(日): ${durationDays}
 メッセージ: ${message ?? "なし"}
-${feedbackContext} 
+
+${feedbackContext}
 
 ${searchContext ? `【Google検索で得た最新情報】
 ${searchContext}

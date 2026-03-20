@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { auth } from "@/lib/firebase"; 
-import { onAuthStateChanged, User } from "firebase/auth"; 
+import { auth } from "@/lib/firebase";
+import { onAuthStateChanged, User } from "firebase/auth";
 import { exportToGoogleTasks } from "@/lib/googleTasks";
 import { getGoogleTasksAccessToken } from "@/lib/auth";
 
@@ -24,7 +24,6 @@ type Props = {
   steps: Step[];
 };
 
-// --- StepCard コンポーネント ---
 function StepCard({ step, index, total, unlocked, loading, editingStepId, editTitle, editDescription, onToggle, onEditStart, onEditSave, onEditCancel, onEditTitleChange, onEditDescriptionChange }: any) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
@@ -80,7 +79,6 @@ function StepCard({ step, index, total, unlocked, loading, editingStepId, editTi
   );
 }
 
-// --- MissionMap メインコンポーネント ---
 export default function MissionMap({ routeId, goal, summary, progress, steps }: Props) {
   const [user, setUser] = useState<User | null>(null);
   const [localSteps, setLocalSteps] = useState(steps);
@@ -89,23 +87,27 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
-  const [headerH, setHeaderH] = useState(160);
-  const [footerH, setFooterH] = useState(180);
-  
-  // フィードバック用
+  const [headerH] = useState(160);
+  const [footerH] = useState(180);
+
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [pendingStep, setPendingStep] = useState<Step | null>(null);
   const [feedbackData, setFeedbackData] = useState({ difficulty: 3, feeling: "まあまあ", memo: "", energy: 3 });
 
-  // 100%達成リザルト用
   const [showDiagnosis, setShowDiagnosis] = useState(false);
   const [diagnosisText, setDiagnosisText] = useState("");
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+  const [isPublic, setIsPublic] = useState(true);
+  const [chartData, setChartData] = useState<{
+    stepLabels: string[];
+    difficulties: number[];
+    energies: number[];
+    feelings: string[];
+    moodScores: number[];
+  } | null>(null);
 
   const router = useRouter();
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  const [isPublic, setIsPublic] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
@@ -118,21 +120,30 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
     setTimeout(() => { el.scrollTop = el.scrollHeight; }, 100);
   }, []);
 
-  // ★ 診断取得用 useEffect
   useEffect(() => {
     if (!showDiagnosis) return;
     async function fetchDiagnosis() {
       setDiagnosisLoading(true);
       try {
-        // 1. 最新のルート情報とフィードバックを取得
         const routeRes = await fetch(`/api/get-route?routeId=${routeId}`);
         const routeData = await routeRes.json();
 
-        // 2. 過去の全リンゴ（感情ログ）を取得
         const logsRes = await fetch(`/api/get-user-logs?userId=${user?.uid}&routeId=${routeId}`);
         const logsData = await logsRes.json();
 
-        // 3. AIに診断を依頼
+        const feedbacks = (routeData.stepFeedbacks || [])
+          .sort((a: any, b: any) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime());
+        const logs = (logsData.logs || [])
+          .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+        setChartData({
+          stepLabels: feedbacks.map((f: any) => `Day ${f.stepTitle?.slice(0, 6) || ""}`),
+          difficulties: feedbacks.map((f: any) => f.difficulty || 3),
+          energies: feedbacks.map((f: any) => f.energy || 3),
+          feelings: feedbacks.map((f: any) => f.feeling || "まあまあ"),
+          moodScores: logs.map((l: any) => l.moodScore || 3),
+        });
+
         const res = await fetch("/api/completion-diagnosis", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -172,106 +183,79 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
       setShowFeedbackModal(true);
       return;
     }
-    await executeUpdate(stepId, false);
-  };
-
-  const executeUpdate = async (stepId: string, isDone: boolean, feedback?: any) => {
-    const updated = localSteps.map((s) => s.id === stepId ? { ...s, done: isDone } : s);
+    const updated = localSteps.map((s) => s.id === stepId ? { ...s, done: false } : s);
     setLocalSteps(updated);
     setLoading(true);
     try {
-      const res = await fetch("/api/update-steps", {
+      await fetch("/api/update-steps", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          routeId, 
-          steps: updated, 
-          userId: user?.uid,
-          goal,
-          feedback: feedback || null 
-        }),
+        body: JSON.stringify({ routeId, steps: updated }),
       });
-      
-      const newProgress = Math.round((updated.filter(s => s.done).length / updated.length) * 100);
-      
-      if (newProgress === 100 && isDone) {
-        setShowDiagnosis(true); // ★ 100%達成時にリザルト発動
-      } else {
-        router.refresh();
-      }
+      router.refresh();
     } catch (e) {
       alert("更新に失敗しました");
     } finally {
       setLoading(false);
-      setShowFeedbackModal(false);
     }
   };
 
   const handleFeedbackSubmit = async () => {
-  if (!pendingStep) return;
-  setShowFeedbackModal(false);
-  const updated = localSteps.map(s => s.id === pendingStep.id ? {...s, done: true} : s);
-  setLocalSteps(updated);
-  setLoading(true);
-  try {
-    await fetch("/api/update-steps", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        routeId,
-        steps: updated,
-        feedback: { stepId: pendingStep.id, stepTitle: pendingStep.title, ...feedbackData }
-      })
-    });
-
-    const varietyMap: Record<number, string> = {
-      1: "forest", 2: "moon", 3: "midnight", 4: "sun", 5: "rare"
-    };
-    const variety = varietyMap[feedbackData.difficulty] || "forest";
-
-    // ログインユーザーのIDを取得するためにFirebase authをインポート
-    const { auth } = await import("@/lib/firebase");
-    const currentUser = auth.currentUser;
-
-    if (currentUser) {
-      await fetch("/api/save-log", {
+    if (!pendingStep) return;
+    setShowFeedbackModal(false);
+    const updated = localSteps.map(s => s.id === pendingStep.id ? { ...s, done: true } : s);
+    setLocalSteps(updated);
+    setLoading(true);
+    try {
+      await fetch("/api/update-steps", {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: currentUser.uid,
           routeId,
-          routeName: goal,
-          moodScore: feedbackData.energy ?? feedbackData.difficulty,
-          note: feedbackData.memo || `「${pendingStep.title}」を完了`,
-          variety,
-          comment: `難易度: ${["簡単","やや簡単","普通","やや難しい","難しい"][feedbackData.difficulty - 1]} / ${feedbackData.feeling}`,
-          source: 'step',
-          stepDay: pendingStep.scheduledDay,  
-          stepTitle: pendingStep.title,   
+          steps: updated,
+          feedback: { stepId: pendingStep.id, stepTitle: pendingStep.title, ...feedbackData }
         })
       });
+
+      const varietyMap: Record<number, string> = {
+        1: "forest", 2: "moon", 3: "midnight", 4: "sun", 5: "rare"
+      };
+      const variety = varietyMap[feedbackData.difficulty] || "forest";
+      const currentUser = auth.currentUser;
+
+      if (currentUser) {
+        await fetch("/api/save-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: currentUser.uid,
+            routeId,
+            routeName: goal,
+            moodScore: feedbackData.energy ?? feedbackData.difficulty,
+            note: feedbackData.memo || `「${pendingStep.title}」を完了`,
+            variety,
+            comment: `難易度: ${["簡単", "やや簡単", "普通", "やや難しい", "難しい"][feedbackData.difficulty - 1]} / ${feedbackData.feeling}`,
+            source: 'step',
+            stepDay: pendingStep.scheduledDay,
+            stepTitle: pendingStep.title,
+          })
+        });
+      }
+
+      const newProgress = Math.round((updated.filter(s => s.done).length / updated.length) * 100);
+      if (newProgress === 100) {
+        setShowDiagnosis(true);
+      } else {
+        router.refresh();
+      }
+    } catch (e) {
+      console.error(e);
+      alert("更新に失敗しました");
+    } finally {
+      setLoading(false);
     }
-
-    // 100%チェックを先に行う
-    const newProgress = Math.round(
-      (updated.filter(s => s.done).length / updated.length) * 100
-    );
-
-    if (newProgress === 100) {
-      setShowDiagnosis(true);
-      // 100%の時はrefreshしない（モーダルが消えるため）
-    } else {
-      router.refresh();
-    }
-
-  } catch (e) {
-    console.error(e);
-    alert("更新に失敗しました");
-  } finally {
-    setLoading(false);
-  }
-  setFeedbackData({ difficulty: 3, feeling: "まあまあ", memo: "", energy: 3 });
-};
+    setFeedbackData({ difficulty: 3, feeling: "まあまあ", memo: "", energy: 3 });
+  };
 
   const handleEditStart = (step: Step) => {
     setEditingStepId(step.id);
@@ -284,7 +268,8 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
     setLocalSteps(updated);
     setEditingStepId(null);
     await fetch("/api/update-steps", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ routeId, steps: updated }),
     });
   };
@@ -302,7 +287,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
   return (
     <div className="relative h-screen overflow-hidden text-sky-900" style={{ background: "linear-gradient(180deg, #e0f2fe 0%, #f0f9ff 50%, #ffffff 100%)" }}>
 
-      {/* 1. ヘッダー */}
+      {/* ヘッダー */}
       <div className="fixed left-0 right-0 top-0 z-30 pb-4 pt-6 text-center" style={{ backgroundColor: "#e0f2fe" }}>
         <div className="mx-auto max-w-sm px-4">
           <div className="mb-1 inline-block rounded-full bg-sky-200/70 px-4 py-1 text-xs font-bold uppercase tracking-widest text-sky-600">✦ Goal ✦</div>
@@ -310,12 +295,14 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
           <p className="mt-1 text-xs text-sky-500">{summary}</p>
           <div className="mx-auto mt-3 max-w-xs">
             <div className="mb-1 flex justify-between text-xs text-sky-400"><span>進捗</span><span className="font-bold text-sky-600">{currentProgress}%</span></div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-sky-200"><div className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-400 transition-all duration-700" style={{ width: `${currentProgress}%` }} /></div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-sky-200">
+              <div className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-400 transition-all duration-700" style={{ width: `${currentProgress}%` }} />
+            </div>
           </div>
         </div>
       </div>
 
-      {/* 2. タスクリスト */}
+      {/* タスクリスト */}
       <div ref={scrollRef} className="absolute inset-0 overflow-y-auto" style={{ paddingTop: `${headerH + 48}px`, paddingBottom: `${footerH}px`, zIndex: 10 }}>
         <div className="relative mx-auto max-w-lg px-4">
           <div className="pointer-events-none absolute left-1/2 w-px -translate-x-1/2" style={{ top: 0, bottom: 0, background: "linear-gradient(to bottom, rgba(125,211,252,0.1), rgba(125,211,252,0.5) 20%, rgba(125,211,252,0.5) 80%, rgba(125,211,252,0.1))" }} />
@@ -327,7 +314,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
         </div>
       </div>
 
-      {/* 3. フッター */}
+      {/* フッター */}
       <div className="fixed bottom-0 left-0 right-0 z-30 px-4 pb-6 pt-4" style={{ background: "linear-gradient(to top, #ffffff 60%, transparent)" }}>
         <div className="mx-auto flex max-w-sm flex-col gap-3">
           <button onClick={handleExport} disabled={exporting} className="w-full rounded-xl bg-blue-500 py-3 font-bold text-white disabled:opacity-50">{exporting ? "書き出し中..." : "Google Tasks に書き出す"}</button>
@@ -336,83 +323,166 @@ export default function MissionMap({ routeId, goal, summary, progress, steps }: 
         </div>
       </div>
 
-      {/* 4. フィードバックモーダル */}
+      {/* フィードバックモーダル */}
       {showFeedbackModal && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:"16px" }}>
-          <div style={{ background:"#ffffff", borderRadius:"24px", padding:"28px 24px", maxWidth:"380px", width:"100%", boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
-            <div style={{textAlign:"center", marginBottom:"20px"}}>
-              <div style={{fontSize:"32px", marginBottom:"8px"}}>✅</div>
-              <p style={{fontSize:"11px", color:"#94a3b8", textTransform:"uppercase"}}>ステップ完了</p>
-              <p style={{fontSize:"15px", fontWeight:600}}>{pendingStep?.title}</p>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}>
+          <div style={{ background: "#ffffff", borderRadius: "24px", padding: "28px 24px", maxWidth: "380px", width: "100%", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ textAlign: "center", marginBottom: "20px" }}>
+              <div style={{ fontSize: "32px", marginBottom: "8px" }}>✅</div>
+              <p style={{ fontSize: "11px", color: "#94a3b8", textTransform: "uppercase" }}>ステップ完了</p>
+              <p style={{ fontSize: "15px", fontWeight: 600 }}>{pendingStep?.title}</p>
             </div>
-            <p style={{fontSize:"12px", fontWeight:600, color:"#64748b", marginBottom:"10px"}}>難易度</p>
-            <div style={{display:"flex", gap:"6px", marginBottom:"20px"}}>
+            <p style={{ fontSize: "12px", fontWeight: 600, color: "#64748b", marginBottom: "10px" }}>難易度</p>
+            <div style={{ display: "flex", gap: "6px", marginBottom: "20px" }}>
               {["😌", "🙂", "😐", "😤", "😵"].map((label, i) => (
-                <button key={i} onClick={() => setFeedbackData(p => ({...p, difficulty: i+1}))} style={{ flex:1, padding:"8px 0", borderRadius:"12px", border: feedbackData.difficulty === i+1 ? "2px solid #3b82f6" : "2px solid #e2e8f0", background: feedbackData.difficulty === i+1 ? "#eff6ff" : "#f8fafc" }}>{label}</button>
+                <button key={i} onClick={() => setFeedbackData(p => ({ ...p, difficulty: i + 1 }))} style={{ flex: 1, padding: "8px 0", borderRadius: "12px", border: feedbackData.difficulty === i + 1 ? "2px solid #3b82f6" : "2px solid #e2e8f0", background: feedbackData.difficulty === i + 1 ? "#eff6ff" : "#f8fafc" }}>{label}</button>
               ))}
             </div>
-            <p style={{fontSize:"12px", fontWeight:600, color:"#64748b", marginBottom:"10px"}}>やる気: <span style={{color:"#f97316"}}>Lv.{feedbackData.energy}</span></p>
-            <input type="range" min="1" max="5" value={feedbackData.energy} onChange={e => setFeedbackData(p => ({...p, energy: Number(e.target.value)}))} style={{width:"100%", accentColor:"#f97316", marginBottom:"20px"}} />
-            <textarea placeholder="メモ（任意）" value={feedbackData.memo} onChange={e => setFeedbackData(p => ({...p, memo: e.target.value}))} style={{ width:"100%", padding:"12px", borderRadius:"12px", border:"2px solid #e2e8f0", background:"#f8fafc", fontSize:"13px", height:"80px", marginBottom:"20px", resize:"none" }} />
-            <div style={{display:"flex", gap:"8px"}}>
-              <button onClick={() => setShowFeedbackModal(false)} style={{flex:1, padding:"12px", borderRadius:"12px", border:"2px solid #e2e8f0"}}>戻る</button>
-              <button onClick={handleFeedbackSubmit} style={{flex:2, padding:"12px", borderRadius:"12px", background:"#3b82f6", color:"white", fontWeight:700}}>完了して記録 🍎</button>
+            <p style={{ fontSize: "12px", fontWeight: 600, color: "#64748b", marginBottom: "10px" }}>やる気: <span style={{ color: "#f97316" }}>Lv.{feedbackData.energy}</span></p>
+            <input type="range" min="1" max="5" value={feedbackData.energy} onChange={e => setFeedbackData(p => ({ ...p, energy: Number(e.target.value) }))} style={{ width: "100%", accentColor: "#f97316", marginBottom: "20px" }} />
+            <textarea placeholder="メモ（任意）" value={feedbackData.memo} onChange={e => setFeedbackData(p => ({ ...p, memo: e.target.value }))} style={{ width: "100%", padding: "12px", borderRadius: "12px", border: "2px solid #e2e8f0", background: "#f8fafc", fontSize: "13px", height: "80px", marginBottom: "20px", resize: "none" }} />
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={() => setShowFeedbackModal(false)} style={{ flex: 1, padding: "12px", borderRadius: "12px", border: "2px solid #e2e8f0" }}>戻る</button>
+              <button onClick={handleFeedbackSubmit} style={{ flex: 2, padding: "12px", borderRadius: "12px", background: "#3b82f6", color: "white", fontWeight: 700 }}>完了して記録 🍎</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 5. 目標達成リザルト診断モーダル */}
+      {/* 達成診断モーダル */}
       {showDiagnosis && (
-        <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:110, display:"flex", alignItems:"center", justifyContent:"center", padding:"16px", backdropFilter:"blur(4px)"}}>
-          <div style={{background:"#ffffff", borderRadius:"32px", padding:"32px 24px", maxWidth:"420px", width:"100%", boxShadow:"0 30px 100px rgba(0,0,0,0.5)", textAlign:"center", animation:"zoomIn 0.4s ease-out"}}>
-            <div style={{fontSize:"50px", marginBottom:"16px"}}>🏆</div>
-            <p style={{fontSize:"12px", color:"#94a3b8", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.2em"}}>Congratulation!</p>
-            <h2 style={{fontSize:"20px", fontWeight:900, color:"#1e293b", marginBottom:"24px", lineHeight:1.3}}>{goal} を完遂！</h2>
-            
-            <div style={{background:"#f8fafc", borderRadius:"24px", padding:"20px", marginBottom:"24px", textAlign:"left", border:"2px solid #eff6ff", position:"relative"}}>
-              <p style={{fontSize:"10px", fontWeight:800, color:"#3b82f6", marginBottom:"10px", textTransform:"uppercase"}}>Journey Diagnosis — 達成診断</p>
-              {diagnosisLoading ? (
-                <div style={{padding:"20px 0", textAlign:"center"}}><div className="inline-block animate-spin h-5 w-5 border-2 border-sky-500 border-t-transparent rounded-full" /><p style={{fontSize:"12px", color:"#94a3b8", marginTop:"8px"}}>AIコーチがあなたの旅を振り返り中...</p></div>
-              ) : (
-                <p style={{fontSize:"14px", color:"#334155", lineHeight:1.8, whiteSpace:"pre-wrap", fontWeight:500}}>{diagnosisText}</p>
-              )}
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 110, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", backdropFilter: "blur(4px)" }}>
+          <div style={{ background: "#ffffff", borderRadius: "32px", padding: "28px 24px", maxWidth: "440px", width: "100%", boxShadow: "0 30px 100px rgba(0,0,0,0.5)", maxHeight: "90vh", overflowY: "auto" }}>
+
+            <div style={{ textAlign: "center", marginBottom: "20px" }}>
+              <div style={{ fontSize: "44px", marginBottom: "8px" }}>🏆</div>
+              <p style={{ fontSize: "11px", color: "#94a3b8", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.2em" }}>Congratulation!</p>
+              <h2 style={{ fontSize: "18px", fontWeight: 900, color: "#1e293b", marginTop: "4px", lineHeight: 1.3 }}>{goal} を完遂！</h2>
             </div>
-            
-           
-           {/* シェア機能 */}
-          
-            <div style={{marginBottom:"16px", textAlign:"left", background:"#f8fafc", borderRadius:"12px", padding:"12px 16px", border:"1px solid #e2e8f0"}}>
-            <label style={{display:"flex", alignItems:"center", gap:"10px", cursor:"pointer"}}>
-            <input
-            type="checkbox"
-            checked={isPublic}
-            onChange={(e) => setIsPublic(e.target.checked)}
-            style={{width:"18px", height:"18px", accentColor:"#3b82f6"}}
-    />
-             <span style={{fontSize:"13px", fontWeight:700, color:"#475569"}}>
-               この旅の結果をみんなにおすそわけする 🐝
-            </span>
-            </label>
-            <p style={{fontSize:"10px", color:"#94a3b8", marginTop:"4px", marginLeft:"28px"}}>
-            公開すると広場にあなたのリンゴとAI診断が表示されます
-            </p>
+
+            {/* グラフエリア */}
+{chartData && chartData.difficulties.length > 0 && (
+  <div style={{ marginBottom: "20px" }}>
+
+    {/* 難易度 & やる気 棒グラフ（顔文字ドット付き） */}
+    <div style={{ background: "#f8fafc", borderRadius: "16px", padding: "16px", marginBottom: "12px", border: "1px solid #e2e8f0" }}>
+      <p style={{ fontSize: "11px", fontWeight: 800, color: "#64748b", marginBottom: "12px", textTransform: "uppercase" }}>ステップごとの難易度 & やる気</p>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: "4px", height: "100px" }}>
+        {chartData.difficulties.map((d, i) => {
+          const e = chartData.energies[i] || 3;
+          const feeling = chartData.feelings[i];
+          const feelingColor = feeling === "バッチリ" ? "#10b981" : feeling === "微妙" ? "#ef4444" : "#f97316";
+          const faceEmoji = d >= 4 ? "😵" : d <= 2 ? "😌" : "😐";
+          return (
+            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
+              {/* 顔文字 */}
+              <span style={{ fontSize: "14px", lineHeight: 1 }}>{faceEmoji}</span>
+              {/* やる気バー */}
+              <div style={{ width: "100%", height: `${e * 12}px`, background: feelingColor, borderRadius: "4px 4px 0 0", opacity: 0.8, transition: "height 0.3s" }} />
+              {/* ステップ番号 */}
+              <span style={{ fontSize: "8px", color: "#94a3b8", marginTop: "2px" }}>{i + 1}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: "10px", marginTop: "10px", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <span style={{ fontSize: "12px" }}>😌</span>
+          <span style={{ fontSize: "9px", color: "#64748b" }}>簡単</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <span style={{ fontSize: "12px" }}>😐</span>
+          <span style={{ fontSize: "9px", color: "#64748b" }}>普通</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <span style={{ fontSize: "12px" }}>😵</span>
+          <span style={{ fontSize: "9px", color: "#64748b" }}>難しい</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <div style={{ width: "12px", height: "8px", background: "#10b981", borderRadius: "2px" }} />
+          <span style={{ fontSize: "9px", color: "#64748b" }}>バッチリ</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <div style={{ width: "12px", height: "8px", background: "#f97316", borderRadius: "2px" }} />
+          <span style={{ fontSize: "9px", color: "#64748b" }}>まあまあ</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <div style={{ width: "12px", height: "8px", background: "#ef4444", borderRadius: "2px" }} />
+          <span style={{ fontSize: "9px", color: "#64748b" }}>微妙</span>
+        </div>
+      </div>
+    </div>
+
+    {/* 農園やる気推移（データがある時だけ） */}
+    {chartData.moodScores.length > 0 && (
+      <div style={{ background: "#f8fafc", borderRadius: "16px", padding: "16px", marginBottom: "12px", border: "1px solid #e2e8f0" }}>
+        <p style={{ fontSize: "11px", fontWeight: 800, color: "#64748b", marginBottom: "12px", textTransform: "uppercase" }}>農園でのやる気推移</p>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "3px", height: "60px" }}>
+          {chartData.moodScores.map((m, i) => {
+            const colors = ["#10b981", "#4338ca", "#94a3b8", "#ff4d4d", "#fbbf24"];
+            const faces = ["😴", "😌", "😐", "😤", "🔥"];
+            return (
+              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
+                <span style={{ fontSize: "10px", lineHeight: 1 }}>{faces[m - 1]}</span>
+                <div style={{ width: "100%", height: `${m * 8}px`, background: colors[m - 1] || "#f97316", borderRadius: "4px 4px 0 0", opacity: 0.8 }} />
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "4px" }}>
+          <span style={{ fontSize: "9px", color: "#94a3b8" }}>開始</span>
+          <span style={{ fontSize: "9px", color: "#94a3b8" }}>完了</span>
+        </div>
+      </div>
+    )}
+
+    {/* 達成感の内訳 */}
+    {chartData.feelings.length > 0 && (
+      <div style={{ background: "#f8fafc", borderRadius: "16px", padding: "16px", border: "1px solid #e2e8f0", marginBottom: "12px" }}>
+        <p style={{ fontSize: "11px", fontWeight: 800, color: "#64748b", marginBottom: "10px", textTransform: "uppercase" }}>達成感の内訳</p>
+        <div style={{ display: "flex", gap: "8px" }}>
+          {(["バッチリ", "まあまあ", "微妙"] as const).map((label) => {
+            const count = chartData.feelings.filter(f => f === label).length;
+            const pct = Math.round(count / chartData.feelings.length * 100);
+            const color = label === "バッチリ" ? "#10b981" : label === "微妙" ? "#ef4444" : "#f97316";
+            return (
+              <div key={label} style={{ flex: 1, textAlign: "center", background: "white", borderRadius: "12px", padding: "10px 4px", border: `2px solid ${color}22` }}>
+                <div style={{ fontSize: "16px", marginBottom: "4px" }}>{label === "バッチリ" ? "🎉" : label === "まあまあ" ? "👍" : "😞"}</div>
+                <div style={{ fontSize: "18px", fontWeight: 900, color }}>{pct}%</div>
+                <div style={{ fontSize: "9px", color: "#94a3b8", fontWeight: 600 }}>{label}</div>
+                <div style={{ fontSize: "9px", color: "#94a3b8" }}>{count}回</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    )}
+  </div>
+)}
+
+            {/* 公開チェックボックス */}
+            <div style={{ marginBottom: "16px", textAlign: "left", background: "#f8fafc", borderRadius: "12px", padding: "12px 16px", border: "1px solid #e2e8f0" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
+                <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} style={{ width: "18px", height: "18px", accentColor: "#3b82f6" }} />
+                <span style={{ fontSize: "13px", fontWeight: 700, color: "#475569" }}>この旅の結果をみんなにおすそわけする 🐝</span>
+              </label>
+              <p style={{ fontSize: "10px", color: "#94a3b8", marginTop: "4px", marginLeft: "28px" }}>公開すると広場にあなたのリンゴとAI診断が表示されます</p>
             </div>
 
             <button
-            type="button"
-            onClick={async () => {
-            try {
-            await fetch("/api/update-route-status", {
-            method: "POST",
-             headers: {"Content-Type": "application/json"},
-             body: JSON.stringify({ routeId, isPublic }),
-              });
-             } catch (e) { console.error(e); }
-            router.push(`/collection/${routeId}`);
-             }}
-             style={{width:"100%", padding:"16px", borderRadius:"16px", border:"none", background:"linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)", color:"#fff", fontWeight:800, fontSize:"15px", cursor:"pointer", boxShadow:"0 10px 20px rgba(37,99,235,0.3)"}}
->   
+              type="button"
+              onClick={async () => {
+                try {
+                  await fetch("/api/update-route-status", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ routeId, isPublic }),
+                  });
+                } catch (e) { console.error(e); }
+                router.push(`/collection/${routeId}`);
+              }}
+              style={{ width: "100%", padding: "16px", borderRadius: "16px", border: "none", background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)", color: "#fff", fontWeight: 800, fontSize: "15px", cursor: "pointer", boxShadow: "0 10px 20px rgba(37,99,235,0.3)" }}
+            >
               貯蔵庫で情熱の結晶を確認する 📦
             </button>
           </div>
