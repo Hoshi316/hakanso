@@ -85,7 +85,9 @@ export default function Home() {
     if (durationUnit === "month") return durationValue * 30;
     return durationValue;
   }, [durationValue, durationUnit]);
-  const [message, setMessage] = useState("");
+  const [currentLevel, setCurrentLevel] = useState("");
+  const [constraints, setConstraints] = useState("");
+  const [deepQuestion, setDeepQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -94,6 +96,7 @@ export default function Home() {
   const [recommendationMessage, setRecommendationMessage] = useState<string>("");
   const [activeRoutes, setActiveRoutes] = useState<RouteWithId[]>([]);
   const [routesLoading, setRoutesLoading] = useState(false);
+  const [combinedMessage, setCombinedMessage] = useState("");
 
 
 
@@ -122,31 +125,20 @@ export default function Home() {
   }, []);
 
   const handleGenerate = async () => {
-    if (!user) return;
-    setLoading(true);
-    setError("");
-    setEditablePlans(null);
-    try {
-      const userHistory = await getUserRouteSummary(user.uid);
-      const res = await fetch("/api/generate-plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal, durationDays, message, userHistory }),
-      });
-      const data: PlanResponse = await res.json();
-      if (!res.ok) throw new Error((data as any).error || "プラン生成に失敗しました");
-      const editable: EditablePlan[] = data.plans.map((plan) => ({
-        ...plan,
-        steps: plan.steps.map((step) => ({ ...step, _editing: false })),
-      }));
-      setEditablePlans(editable);
-      setRecommendedStyle(data.recommendedStyle);
-      setRecommendationMessage(data.recommendationMessage);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "エラーが発生しました");
-    } finally {
-      setLoading(false);
-    }
+    // 「出発地」「旅の荷物」「長期の問い」を結合してmessageとして渡す
+    const combined = [
+    currentLevel ? `【現在地】${currentLevel}` : "",
+    constraints ? `【制約・リソース】${constraints}` : "",
+    deepQuestion ? `【この旅で本当に変えたいこと】${deepQuestion}` : "",
+  ].filter(Boolean).join("\n");
+
+  setCombinedMessage(combined); // stateに保存
+
+  const res = await fetch("/api/generate-plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal, durationDays, message: combined, userHistory }),
+  });
   };
 
   const toggleEditStep = (planStyle: string, stepIndex: number) => {
@@ -200,9 +192,10 @@ export default function Home() {
           userId: user.uid,
           goal: plan.goal,
           durationDays: plan.recommendedDays,
-          message,
+          message: combinedMessage,
           summary: plan.summary,
           steps: cleanSteps,
+          hases: (plan as any).phases ?? [],
         }),
       });
       const saveData = await saveRes.json();
@@ -215,7 +208,25 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-amber-50 p-6 text-gray-800">
+  <div className="min-h-screen bg-amber-50">
+    {/* ── PC用サイドナビ ── */}
+    <nav className="fixed left-0 top-0 hidden h-screen w-16 flex-col items-center gap-6 border-r border-orange-100 bg-white py-6 shadow-sm md:flex">
+      <Link href="/" className="flex flex-col items-center gap-1 group">
+        <span className="text-2xl">🏠</span>
+        <span className="text-[9px] font-bold text-gray-400 group-hover:text-orange-500">ホーム</span>
+      </Link>
+      <Link href="/history" className="flex flex-col items-center gap-1 group">
+        <span className="text-2xl">📜</span>
+        <span className="text-[9px] font-bold text-gray-400 group-hover:text-orange-500">旅の記録</span>
+      </Link>
+      <div className="mt-auto flex flex-col items-center gap-1">
+        <span className="text-2xl">🍎</span>
+        <span className="text-[9px] font-bold text-orange-400">R&R</span>
+      </div>
+    </nav>
+
+    {/* ── メインコンテンツ ── */}
+    <main className="min-h-screen p-6 text-gray-800 md:pl-24">
       <div className="mx-auto max-w-2xl">
         <h1 className="mb-2 text-4xl font-bold">Route & Root</h1>
         <p className="mb-6 text-lg text-gray-600">
@@ -226,58 +237,101 @@ export default function Home() {
         {/* ── 新しい目標入力フォーム ── */}
         {!editablePlans && (
           <div className="rounded-2xl bg-white p-6 shadow">
-            <h2 className="mb-4 font-bold text-gray-700">✦ 新しい旅を始める</h2>
+            <h2 className="mb-1 font-bold text-gray-700">✦ 新しい旅を始める</h2>
+            <p className="mb-5 text-xs text-gray-400">旅の準備を整えるほど、AIのプランが精度を増します。</p>
+
+            {/* 目的地 */}
             <div className="mb-4">
-              <label className="mb-2 block font-semibold">目標</label>
+              <label className="mb-1 block font-semibold text-gray-700">
+                🏔️ 目的地
+                <span className="ml-2 text-xs font-normal text-gray-400">この旅の終わりに何ができるようになりたいですか？</span>
+              </label>
               <input
                 type="text"
                 value={goal}
                 onChange={(e) => setGoal(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 p-3"
-                placeholder="例：Blenderで3Dモデリングをマスターする"
+                className="w-full rounded-lg border border-gray-300 p-3 focus:border-orange-400 focus:outline-none"
+                placeholder="例：自分でモデルを訓練してkaggleに提出できる"
               />
             </div>
-            {/* 期間入力 */}
+
+            {/* 出発地 */}
             <div className="mb-4">
-              <label className="mb-2 block font-semibold">期間</label>
+              <label className="mb-1 block font-semibold text-gray-700">
+                🧭 出発地
+                <span className="ml-2 text-xs font-normal text-gray-400">いま、どのあたりにいますか？</span>
+              </label>
+              <input
+                type="text"
+                value={currentLevel}
+                onChange={(e) => setCurrentLevel(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 p-3 focus:border-orange-400 focus:outline-none"
+                placeholder="例：Pythonは書けるが機械学習は未経験"
+              />
+            </div>
+
+            {/* 旅の荷物 */}
+            <div className="mb-4">
+              <label className="mb-1 block font-semibold text-gray-700">
+                🎒 旅の荷物
+                <span className="ml-2 text-xs font-normal text-gray-400">使える時間や制約はありますか？</span>
+              </label>
+              <input
+                type="text"
+                value={constraints}
+                onChange={(e) => setConstraints(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 p-3 focus:border-orange-400 focus:outline-none"
+                placeholder="例：平日1時間・土日3時間。数学は苦手"
+              />
+            </div>
+
+            {/* 期間 */}
+            <div className="mb-4">
+              <label className="mb-1 block font-semibold text-gray-700">⏳ 期間</label>
               <div className="flex gap-2">
                 <input
                   type="number"
                   value={durationValue}
                   onChange={(e) => setDurationValue(Number(e.target.value))}
-                  className="w-24 rounded-lg border border-gray-300 p-3"
+                  className="w-24 rounded-lg border border-gray-300 p-3 focus:border-orange-400 focus:outline-none"
                   min={1}
                 />
                 <select
                   value={durationUnit}
                   onChange={(e) => setDurationUnit(e.target.value as "day" | "week" | "month")}
-                  className="flex-1 rounded-lg border border-gray-300 p-3 bg-white"
+                  className="flex-1 rounded-lg border border-gray-300 bg-white p-3 focus:border-orange-400 focus:outline-none"
                 >
                   <option value="day">日</option>
                   <option value="week">週</option>
                   <option value="month">ヶ月</option>
                 </select>
               </div>
-              <p className="mt-1 text-xs text-gray-400">
-                = {durationDays} 日間
-              </p>
+              <p className="mt-1 text-xs text-gray-400">= {durationDays} 日間</p>
             </div>
 
-            <div className="mb-4">
-              <label className="mb-2 block font-semibold">自分への一言</label>
-              <textarea
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 p-3"
-                rows={3}
-              />
-            </div>
+            {/* 長期目標の追加質問（30日以上の時だけ表示） */}
+            {durationDays >= 30 && (
+              <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <p className="text-sm font-bold text-amber-800">🧭 長い旅ですね。一つだけ聞かせてください。</p>
+                <p className="mt-1 text-xs text-amber-600">
+                  この旅が終わった時、何が変わっていてほしいですか？
+                </p>
+                <textarea
+                  value={deepQuestion}
+                  onChange={(e) => setDeepQuestion(e.target.value)}
+                  className="mt-2 w-full rounded-lg border border-amber-200 bg-white p-2 text-sm focus:outline-none"
+                  rows={2}
+                  placeholder="例：転職できている、副業で月3万稼げている、自信を持って話せるようになっている..."
+                />
+              </div>
+            )}
+
             <button
               onClick={handleGenerate}
               disabled={loading || !goal || !user}
-              className="rounded-xl bg-orange-500 px-6 py-3 font-semibold text-white disabled:opacity-50"
+              className="rounded-xl bg-orange-500 px-6 py-3 font-semibold text-white disabled:opacity-50 transition hover:bg-orange-600"
             >
-              {loading ? "3つのプランを生成中..." : !user ? "ログインしてください" : "プランを見る"}
+              {loading ? "旅のプランを生成中..." : !user ? "ログインしてください" : "旅の準備をする ✦"}
             </button>
             {error && <p className="mt-4 text-red-600">{error}</p>}
           </div>
@@ -365,7 +419,6 @@ export default function Home() {
               </button>
             </div>
 
-            {/* AIからの推薦メッセージ */}
             {recommendationMessage && (
               <div className="mb-6 rounded-2xl border-2 border-orange-200 bg-white p-5 shadow-sm">
                 <div className="mb-2 flex items-center gap-2">
@@ -382,8 +435,6 @@ export default function Home() {
                 const diff = plan.recommendedDays - durationDays;
                 return (
                   <div key={plan.style} className={`rounded-2xl border-2 p-6 ${config.bg}`}>
-
-                    {/* ヘッダー */}
                     <div className="mb-4 flex items-center justify-between">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-3xl">{plan.styleEmoji}</span>
@@ -404,11 +455,9 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* 哲学・タグライン */}
                     <p className="mb-1 text-lg font-bold text-gray-800">"{plan.philosophy}"</p>
                     <p className={`mb-4 text-sm font-semibold ${config.badge.split(" ")[1]}`}>{plan.tagline}</p>
 
-                    {/* 期間バッジ */}
                     <div className="mb-4 flex items-center gap-3">
                       <div className={`rounded-xl px-4 py-2 text-center ${config.badge}`}>
                         <p className="text-xs font-semibold opacity-70">AI提案期間</p>
@@ -422,13 +471,11 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* 向いている人・トレードオフ */}
                     <div className="mb-4 space-y-1 rounded-xl bg-white/60 p-3 text-sm">
                       <p className="text-gray-600"><span className="font-semibold">👤 向いている人：</span>{plan.suitableFor}</p>
                       <p className="italic text-gray-500"><span className="font-semibold not-italic">⚖️ トレードオフ：</span>{plan.tradeoff}</p>
                     </div>
 
-                    {/* ステップ一覧（プレ編集可能） */}
                     <div className="mb-4 space-y-2">
                       <p className="text-xs font-bold text-gray-500">✏️ ステップを編集できます（保存前に調整可）</p>
                       {plan.steps.map((step, stepIndex) => (
@@ -474,13 +521,9 @@ export default function Home() {
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex-1 min-w-0">
                                 <p className="text-xs font-bold text-gray-400">Day {step.scheduledDay}</p>
-                                <p className="text-sm font-bold text-gray-800 truncate">
-                                  {step.title}
-                                </p>
+                                <p className="text-sm font-bold text-gray-800 truncate">{step.title}</p>
                                 <div className="group relative">
-                                  <p className="text-xs text-gray-500 line-clamp-2">
-                                    {step.description}
-                                  </p>
+                                  <p className="text-xs text-gray-500 line-clamp-2">{step.description}</p>
                                   {step.description.length > 40 && (
                                     <div className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-64 rounded-xl border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-xl group-hover:block animate-in fade-in zoom-in duration-200">
                                       {step.description}
@@ -500,7 +543,6 @@ export default function Home() {
                       ))}
                     </div>
 
-                    {/* 出発ボタン */}
                     <button
                       onClick={() => handleSelectPlan(plan)}
                       disabled={saving}
@@ -517,5 +559,6 @@ export default function Home() {
         )}
       </div>
     </main>
-  );
+  </div>
+);
 }

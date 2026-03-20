@@ -120,7 +120,7 @@ export default function HistoryPage() {
             )}
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filteredRoutes.map((route) => {
               const completedCount = route.steps.filter((s) => s.done).length;
               const totalCount = route.steps.length;
