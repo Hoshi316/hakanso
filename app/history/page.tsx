@@ -32,9 +32,12 @@ export default function HistoryPage() {
     return () => unsubscribe();
   }, []);
 
-  const filteredRoutes = routes.filter((r) =>
-    tab === "active" ? r.progress < 100 : r.progress === 100
-  );
+  const filteredRoutes = routes.filter((r) => {
+    const isAbandoned = (r as any).status === "abandoned";
+    if (tab === "active") return r.progress < 100 && !isAbandoned;
+    if (tab === "done") return r.progress === 100 && !isAbandoned;
+    return false;
+  });
 
   if (loading) {
     return (
@@ -152,43 +155,6 @@ export default function HistoryPage() {
           </button>
         </div>
 
-        {/* タブ */}
-        <div className="mb-6 flex gap-2">
-          <button
-            onClick={() => setTab("active")}
-            className={`rounded-full px-5 py-2 text-sm font-bold transition ${
-              tab === "active"
-                ? "bg-orange-500 text-white shadow-md"
-                : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-50"
-            }`}
-          >
-            🚶 進行中
-            {routes.filter(r => r.progress < 100).length > 0 && (
-              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
-                tab === "active" ? "bg-white/30 text-white" : "bg-orange-100 text-orange-600"
-              }`}>
-                {routes.filter(r => r.progress < 100).length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setTab("done")}
-            className={`rounded-full px-5 py-2 text-sm font-bold transition ${
-              tab === "done"
-                ? "bg-emerald-500 text-white shadow-md"
-                : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-50"
-            }`}
-          >
-            ✅ 完了
-            {routes.filter(r => r.progress === 100).length > 0 && (
-              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
-                tab === "done" ? "bg-white/30 text-white" : "bg-emerald-100 text-emerald-600"
-              }`}>
-                {routes.filter(r => r.progress === 100).length}
-              </span>
-            )}
-          </button>
-        </div>
 
         {/* ルート一覧 */}
         {filteredRoutes.length === 0 ? (

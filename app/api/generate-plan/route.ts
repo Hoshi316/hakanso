@@ -6,11 +6,58 @@ const ai = new GoogleGenAI({
   location: "us-central1",
 });
 
+const stepSchema = {
+  type: Type.OBJECT,
+  properties: {
+    title:        { type: Type.STRING, description: "15文字以内" },
+    description:  { type: Type.STRING, description: "40文字以内" },
+    scheduledDay: { type: Type.INTEGER },
+  },
+  required: ["title", "description", "scheduledDay"],
+};
+
+const phaseSchema = {
+  type: Type.OBJECT,
+  properties: {
+    title:       { type: Type.STRING, description: "フェーズ名（例：基礎固め）" },
+    startDay:    { type: Type.INTEGER },
+    endDay:      { type: Type.INTEGER },
+    description: { type: Type.STRING, description: "このフェーズの目標を1文で" },
+  },
+  required: ["title", "startDay", "endDay", "description"],
+};
+
+const planSchema = {
+  type: Type.OBJECT,
+  properties: {
+    style:           { type: Type.STRING },
+    styleLabel:      { type: Type.STRING },
+    styleEmoji:      { type: Type.STRING },
+    philosophy:      { type: Type.STRING },
+    tagline:         { type: Type.STRING },
+    suitableFor:     { type: Type.STRING },
+    tradeoff:        { type: Type.STRING },
+    intensityLevel:  { type: Type.INTEGER },
+    recommendedDays: { type: Type.INTEGER },
+    daysComment:     { type: Type.STRING },
+    goal:            { type: Type.STRING },
+    summary:         { type: Type.STRING },
+    steps:           { type: Type.ARRAY, items: stepSchema },
+    phases:          { type: Type.ARRAY, items: phaseSchema },
+  },
+  required: [
+    "style", "styleLabel", "styleEmoji",
+    "philosophy", "tagline", "suitableFor", "tradeoff",
+    "intensityLevel", "recommendedDays", "daysComment",
+    "goal", "summary", "steps", "phases",
+  ],
+};
+
 // ... stepSchema, planSchema は既存のまま ...
 
 export async function POST(req: Request) {
   try {
-    const { goal, durationDays, message } = await req.json();
+    const { goal, durationDays, message, userId, userHistory } = await req.json();
 
     if (!goal || !durationDays) {
       return Response.json({ error: "goal と durationDays は必須です" }, { status: 400 });
@@ -219,6 +266,7 @@ recommendationMessage: 推薦理由を「ユーザーの状況に寄り添った
     });
 
     const text = response.text;
+    if (!text) throw new Error("AIからの応答が空でした");
     const data = JSON.parse(text);
     return Response.json(data);
 

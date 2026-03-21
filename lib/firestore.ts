@@ -79,18 +79,38 @@ export async function getUserRouteSummary(userId: string): Promise<string> {
       orderBy("createdAt", "desc")
     );
     const snap = await getDocs(q);
-    const routes = snap.docs.map((doc) => ({ ...(doc.data() as RouteDoc) }));
+    const routes = snap.docs.map(doc => ({ ...(doc.data() as RouteDoc & { status?: string; abandonReason?: string }) }));
 
     if (routes.length === 0) return "過去の旅の記録なし（初回ユーザー）";
 
-    const summary = routes.slice(0, 5).map((r) => {
+    const reasonLabels: Record<string, string> = {
+      time: "時間が足りなかった",
+      hard: "難しすぎた",
+      bored: "興味が失せた",
+      changed: "目標が変わった",
+      other: "その他の理由",
+    };
+
+    const activeRoutes = routes.filter(r => r.status !== "abandoned").slice(0, 5);
+    const abandonedRoutes = routes.filter(r => r.status === "abandoned").slice(0, 3);
+
+    const activeSummary = activeRoutes.map(r => {
       const total = r.steps.length;
-      const done = r.steps.filter((s) => s.done).length;
+      const done = r.steps.filter(s => s.done).length;
       const rate = total === 0 ? 0 : Math.round((done / total) * 100);
       return `・目標「${r.goal}」: 完遂率${rate}%（${done}/${total}ステップ完了）`;
     }).join("\n");
 
-    return summary;
+    const abandonedSummary = abandonedRoutes.length > 0
+      ? "\n\n【過去に中断した旅】\n" + abandonedRoutes.map(r => {
+          const reason = r.abandonReason ? reasonLabels[r.abandonReason] || r.abandonReason : "理由不明";
+          const total = r.steps.length;
+          const done = r.steps.filter(s => s.done).length;
+          return `・目標「${r.goal}」を${reason}という理由で中断（${done}/${total}ステップ時点）`;
+        }).join("\n")
+      : "";
+
+    return activeSummary + abandonedSummary;
   } catch {
     return "過去データ取得失敗";
   }
