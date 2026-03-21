@@ -29,7 +29,7 @@ type Props = {
   summary: string;
   progress: number;
   steps: Step[];
-  phases?: Phase[]; // フェーズ機能用
+  phases?: Phase[];
 };
 
 // --- サブコンポーネント: ステップカード ---
@@ -60,8 +60,8 @@ function StepCard({
           : unlocked ? "border-sky-200 bg-white shadow-lg"
           : "border-sky-100 bg-sky-50/60"
         }`}>
-          {!unlocked && <p className="mb-1 text-[10px] text-sky-300">🔒 ロック中</p>}
-          <p className="mb-1 text-[10px] font-bold text-sky-400 uppercase">Day {step.scheduledDay}</p>
+          {!unlocked && <p className="mb-1 text-[10px] text-sky-300">🔒 前を完了してください</p>}
+          <p className="mb-1 text-[10px] font-bold text-sky-400">Day {step.scheduledDay}</p>
           {isEditing ? (
             <div className="space-y-2">
               <input type="text" value={editTitle} onChange={(e) => onEditTitleChange(e.target.value)} className="w-full rounded-lg border border-sky-300 bg-sky-50 p-2 text-sm font-bold text-sky-900" />
@@ -92,6 +92,9 @@ function StepCard({
 
 // --- メインコンポーネント ---
 export default function MissionMap({ routeId, goal, summary, progress, steps, phases }: Props) {
+  const router = useRouter();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  
   const [user, setUser] = useState<User | null>(null);
   const [localSteps, setLocalSteps] = useState(steps);
   const [loading, setLoading] = useState(false);
@@ -111,7 +114,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
   const [chartData, setChartData] = useState<any>(null);
 
-  const router = useRouter();
+  // データ整理
   const sortedAsc = [...localSteps].sort((a, b) => a.scheduledDay - b.scheduledDay);
   const sortedSteps = [...sortedAsc].reverse();
   const nextStep = sortedAsc.find(s => !s.done);
@@ -130,7 +133,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
     return idx === 0 ? true : sortedAsc[idx - 1].done;
   };
 
-  // 診断ロジック
+  // --- 診断ロジック ---
   useEffect(() => {
     if (!showDiagnosis || !user) return;
     async function fetchDiagnosis() {
@@ -159,7 +162,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
     fetchDiagnosis();
   }, [showDiagnosis, routeId, goal, user]);
 
-  // ステップ更新
+  // --- ステップ操作ハンドラー ---
   const handleToggle = async (stepId: string) => {
     if (!isUnlocked(stepId)) return;
     const target = localSteps.find(s => s.id === stepId);
@@ -191,18 +194,32 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ routeId, steps: updated, feedback: { stepId: pendingStep.id, stepTitle: pendingStep.title, ...feedbackData } })
       });
-      const varietyMap: any = { 2: "forest", 3: "moon", 4: "sun" };
+      // カラーセラピーに基づいたマッピング（簡単:緑, 普通:青, 難:赤）
+      const varietyMap: any = { 2: "green", 3: "blue", 4: "red" };
       await fetch("/api/save-log", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           userId: user?.uid, routeId, routeName: goal, moodScore: feedbackData.energy,
-          note: feedbackData.memo || `「${pendingStep.title}」を完了`, variety: varietyMap[feedbackData.difficulty] || "forest",
+          note: feedbackData.memo || `「${pendingStep.title}」を完了`, 
+          variety: varietyMap[feedbackData.difficulty] || "green",
           source: 'step', stepDay: pendingStep.scheduledDay, stepTitle: pendingStep.title
         })
       });
       if (updated.every(s => s.done)) setShowDiagnosis(true);
       else router.refresh();
     } finally { setLoading(false); }
+  };
+
+  const handleEditStart = (step: Step) => {
+    setEditingStepId(step.id);
+    setEditTitle(step.title);
+    setEditDescription(step.description);
+  };
+
+  const handleEditSave = async (stepId: string) => {
+    const updated = localSteps.map(s => s.id === stepId ? { ...s, title: editTitle, description: editDescription } : s);
+    updateStepInDB(updated);
+    setEditingStepId(null);
   };
 
   const handleExport = async () => {
@@ -226,7 +243,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
             </h1>
           </div>
           <div className="flex gap-2">
-            <Link href={`/garden/${routeId}`} className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-white shadow-lg shadow-emerald-100">🍎 農園</Link>
+            <Link href={`/garden/${routeId}`} className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-white shadow-lg">🍎 農園</Link>
           </div>
         </div>
       </div>
@@ -243,8 +260,8 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
                   unlocked={isUnlocked(step.id)} loading={loading}
                   editingStepId={editingStepId} editTitle={editTitle} editDescription={editDescription}
                   onToggle={() => handleToggle(step.id)}
-                  onEditStart={() => { setEditingStepId(step.id); setEditTitle(step.title); setEditDescription(step.description); }}
-                  onEditSave={() => updateStepInDB(localSteps.map(s => s.id === step.id ? { ...s, title: editTitle, description: editDescription } : s)).then(() => setEditingStepId(null))}
+                  onEditStart={() => handleEditStart(step)}
+                  onEditSave={() => handleEditSave(step.id)}
                   onEditCancel={() => setEditingStepId(null)}
                   onEditTitleChange={setEditTitle} onEditDescriptionChange={setEditDescription}
                 />
@@ -267,17 +284,16 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
                 <div className="rounded-2xl border-2 border-sky-300 bg-sky-50 p-5 shadow-sm">
                   <p className="text-[10px] font-black text-sky-500 uppercase mb-2">🎯 Next Step</p>
                   <p className="text-sm font-black text-sky-900">{nextStep.title}</p>
-                  <button onClick={() => handleToggle(nextStep.id)} className="mt-4 w-full rounded-xl bg-sky-500 py-3 text-sm font-bold text-white shadow-lg shadow-sky-200 hover:bg-sky-600 transition">完了にする</button>
+                  <button onClick={() => handleToggle(nextStep.id)} className="mt-4 w-full rounded-xl bg-sky-500 py-3 text-sm font-bold text-white shadow-lg">完了にする</button>
                 </div>
               )}
-              
-              <button onClick={handleExport} disabled={exporting} className="w-full rounded-xl bg-white border border-sky-200 py-3 text-sm font-bold text-sky-600 hover:bg-sky-50 transition">📤 Google Tasksへ出力</button>
+              <button onClick={handleExport} disabled={exporting} className="w-full rounded-xl bg-white border border-sky-200 py-3 text-sm font-bold text-sky-600">📤 Google Tasksへ出力</button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── SP用 下部固定ナビ ── */}
+      {/* ── スマホ用固定ナビ ── */}
       <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/80 backdrop-blur-md border-t border-sky-100 p-4 flex gap-2 md:hidden">
         <button onClick={handleExport} className="flex-1 rounded-xl bg-sky-100 py-3 text-xs font-bold text-sky-600">Tasks出力</button>
         <Link href={`/garden/${routeId}`} className="flex-[2] rounded-xl bg-emerald-500 py-3 text-center text-xs font-bold text-white shadow-lg">🍎 農園へ向かう</Link>
@@ -287,7 +303,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
       {showFeedbackModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl">
-             <div className="text-center mb-6"><div className="text-4xl mb-2">✅</div><h2 className="text-lg font-black text-slate-800">お疲れ様でした！</h2></div>
+             <div className="text-center mb-6"><div className="text-4xl mb-2">✅</div><h2 className="text-lg font-black">お疲れ様でした！</h2></div>
              <div className="space-y-6">
                 <div><p className="text-xs font-bold text-slate-500 mb-3 uppercase">手応えはどうでしたか？</p>
                   <div className="flex gap-2">{[2,3,4].map(v => (<button key={v} onClick={() => setFeedbackData(p=>({...p, difficulty:v}))} className={`flex-1 py-3 rounded-xl border-2 font-bold text-xs ${feedbackData.difficulty===v ? "border-sky-500 bg-sky-50 text-sky-600" : "border-slate-100 text-slate-400"}`}>{v===2?"😌簡単":v===3?"😐普通":"😵難"}</button>))}</div>
@@ -317,7 +333,7 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
                    </div>
                  )}
                  <div className="bg-sky-50 rounded-3xl p-6 border-2 border-sky-100"><p className="text-sm font-bold leading-relaxed text-slate-700 whitespace-pre-wrap">{diagnosisText}</p></div>
-                 <Link href={`/collection/${routeId}`} className="block w-full py-5 rounded-3xl bg-emerald-500 text-center font-black text-white text-lg shadow-xl shadow-emerald-100">貯蔵庫で成果を見る 📦</Link>
+                 <Link href={`/collection/${routeId}`} className="block w-full py-5 rounded-3xl bg-emerald-500 text-center font-black text-white text-lg shadow-xl">貯蔵庫で成果を見る 📦</Link>
                </div>
              )}
           </div>
