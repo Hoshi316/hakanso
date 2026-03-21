@@ -6,6 +6,13 @@ export type Step = {
   done: boolean;
 };
 
+export type Phase = {
+  title: string;
+  startDay: number;
+  endDay: number;
+  description: string;
+};
+
 export type RoutePlan = {
   goal: string;
   summary: string;
@@ -26,4 +33,7 @@ export type RouteDoc = {
   progress: number;
   createdAt: string;
   phases?: Phase[];
+  status?: "active" | "abandoned";
+  abandonReason?: string;
+  abandonedAt?: string;
 };

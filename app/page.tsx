@@ -227,7 +227,7 @@ export default function Home() {
           message: combinedMessage,
           summary: plan.summary,
           steps: cleanSteps,
-          hases: (plan as any).phases ?? [],
+          phases: (plan as any).phases ?? [],
         }),
       });
       const saveData = await saveRes.json();

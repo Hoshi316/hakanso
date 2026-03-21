@@ -102,6 +102,12 @@ function StepCard({
                 <button onClick={onEditSave} className="rounded-lg bg-sky-500 px-3 py-1 text-xs font-bold text-white">保存</button>
                 <button onClick={onEditCancel} className="rounded-lg bg-sky-100 px-3 py-1 text-xs text-sky-600">キャンセル</button>
               </div>
+                <button
+                onClick={() => setShowAbandonModal(true)}
+                className="w-full rounded-xl border border-red-200 py-2 text-sm font-bold text-red-400 hover:bg-red-50 transition"
+              >
+                🏳️ この旅を中断する
+              </button>
             </div>
           ) : (
             <>
@@ -229,6 +235,31 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
       alert(e instanceof Error ? e.message : "書き出しに失敗しました");
     } finally { setExporting(false); }
   };
+
+  const handleAbandon = async () => {
+  if (!abandonReason) return;
+    setAbandoning(true);
+    try {
+      await fetch("/api/update-route-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          routeId,
+          status: "abandoned",
+          abandonReason,
+        }),
+      });
+      router.push("/");
+    } catch (e) {
+      alert("中断処理に失敗しました");
+    } finally {
+      setAbandoning(false);
+    }
+  };
+
+  const [showAbandonModal, setShowAbandonModal] = useState(false);
+  const [abandonReason, setAbandonReason] = useState("");
+  const [abandoning, setAbandoning] = useState(false);
 
   return (
     <div className="min-h-screen" style={{ background: "linear-gradient(180deg, #e0f2fe 0%, #f0f9ff 50%, #ffffff 100%)" }}>
@@ -386,10 +417,77 @@ export default function MissionMap({ routeId, goal, summary, progress, steps, ph
                 className="block w-full rounded-xl bg-emerald-500 py-3 text-center text-sm font-bold text-white transition hover:bg-emerald-600">
                 果樹園へ向かう 🍎
               </Link>
+                <button
+                onClick={() => setShowAbandonModal(true)}
+                className="w-full rounded-xl border border-red-200 py-2 text-sm font-bold text-red-400 hover:bg-red-50 transition"
+              >
+                🏳️ この旅を中断する
+              </button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* 中断確認モーダル */}
+        {showAbandonModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.6)" }}
+            onClick={() => { setShowAbandonModal(false); setAbandonReason(""); }}
+          >
+            <div
+              className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="text-center mb-6">
+                <p className="text-3xl mb-2">🏳️</p>
+                <h2 className="text-lg font-black text-slate-800">この旅を中断しますか？</h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  中断の記録は次の旅のプランに活かされます。
+                </p>
+              </div>
+
+              <p className="text-xs font-bold text-slate-500 mb-3">中断の理由を教えてください</p>
+              <div className="space-y-2 mb-6">
+                {[
+                  { value: "time", label: "⏰ 時間が足りなかった" },
+                  { value: "hard", label: "😵 難しすぎた" },
+                  { value: "bored", label: "💨 興味が失せた" },
+                  { value: "changed", label: "🔄 目標が変わった" },
+                  { value: "other", label: "💭 その他" },
+                ].map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => setAbandonReason(value)}
+                    className={`w-full rounded-xl px-4 py-3 text-sm font-bold text-left transition ${
+                      abandonReason === value
+                        ? "bg-red-100 border-2 border-red-400 text-red-700"
+                        : "bg-slate-50 border-2 border-transparent text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setShowAbandonModal(false); setAbandonReason(""); }}
+                  className="flex-1 rounded-xl border-2 border-slate-200 py-3 text-sm font-bold text-slate-500 hover:bg-slate-50 transition"
+                >
+                  続ける
+                </button>
+                <button
+                  onClick={handleAbandon}
+                  disabled={!abandonReason || abandoning}
+                  className="flex-1 rounded-xl bg-red-500 py-3 text-sm font-bold text-white hover:bg-red-600 transition disabled:opacity-40"
+                >
+                  {abandoning ? "処理中..." : "中断する"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* SP用下部ボタン */}
       <div className="fixed bottom-0 left-0 right-0 z-30 px-4 pb-6 pt-4 md:hidden"
