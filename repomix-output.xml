@@ -42,22 +42,38 @@ The content is organized as follows:
 <directory_structure>
 app/
   api/
+    completion-diagnosis/
+      route.ts
     generate-apple/
       route.ts
     generate-plan/
       route.ts
     get-route/
       route.ts
+    get-user/
+      route.ts
+    get-user-logs/
+      route.ts
     save-log/
       route.ts
     save-route/
       route.ts
+    save-user/
+      route.ts
+    send-bee/
+      route.ts
+    share-to-orchard/
+      route.ts
+    transcribe-audio/
+      route.ts
     update-route-progress/
+      route.ts
+    update-route-status/
       route.ts
     update-steps/
       route.ts
   collection/
-    [userId]/
+    [routeId]/
       page.tsx
   garden/
     [routeId]/
@@ -67,6 +83,10 @@ app/
   map/
     [routeId]/
       page.tsx
+  orchard/
+    page.tsx
+  username-setup/
+    page.tsx
   favicon.ico
   globals.css
   layout.tsx
@@ -138,56 +158,178 @@ export async function GET(req: Request) {
 }
 </file>
 
-<file path="app/api/save-route/route.ts">
-import { saveRoute } from "@/lib/firestore";
-import { RouteDoc } from "@/types/route";
+<file path="app/api/get-user/route.ts">
+import { db } from "@/lib/firebase";
+import { doc, getDoc } from "firebase/firestore";
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const uid = searchParams.get("uid");
+  if (!uid) return Response.json({ error: "uid が必要" }, { status: 400 });
+
+  try {
+    const snap = await getDoc(doc(db, "users", uid));
+    if (!snap.exists()) return Response.json({ exists: false });
+    return Response.json({ exists: true, ...snap.data() });
+  } catch (error) {
+    return Response.json({ error: "取得失敗" }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/get-user-logs/route.ts">
+import { db } from "@/lib/firebase";
+import { collection, query, where, getDocs } from "firebase/firestore";
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const userId = searchParams.get("userId");
+  const routeId = searchParams.get("routeId");
+
+  if (!userId || !routeId) {
+    return Response.json({ error: "userId と routeId が必要" }, { status: 400 });
+  }
+
+  try {
+    const q = query(
+      collection(db, "logs"),
+      where("userId", "==", userId),
+      where("routeId", "==", routeId)
+    );
+    const snap = await getDocs(q);
+    const logs = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return Response.json({ logs });
+  } catch (error) {
+    return Response.json({ error: "取得失敗" }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/save-user/route.ts">
+import { db } from "@/lib/firebase";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { userId, goal, durationDays, message, summary, steps } = body;
+    const { uid, displayName, email, username } = await req.json();
+    const userRef = doc(db, "users", uid);
 
-    if (!userId || !goal || !durationDays || !summary || !steps) {
-      return Response.json(
-        { error: "必要なデータが不足しています" },
-        { status: 400 }
-      );
+    await setDoc(userRef, {
+      displayName: displayName || "匿名ユーザー",
+      email,
+      username: username || displayName || "旅人",
+      createdAt: new Date().toISOString(),
+    }, { merge: true });
+
+    return Response.json({ success: true });
+  } catch (error) {
+    return Response.json({ error: "保存失敗" }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/send-bee/route.ts">
+import { db } from "@/lib/firebase";
+import { doc, updateDoc, increment } from "firebase/firestore";
+
+export async function POST(req: Request) {
+  try {
+    const { targetRouteId } = await req.json();
+
+    if (!targetRouteId) {
+      return Response.json({ error: "targetRouteIdが必要" }, { status: 400 });
     }
 
-    const stepsWithState = steps.map(
-      (
-        step: { title: string; description: string; scheduledDay: number },
-        index: number
-      ) => ({
-        id: crypto.randomUUID(),
-        title: step.title,
-        description: step.description,
-        scheduledDay: step.scheduledDay,
-        done: false,
-      })
-    );
+    const routeRef = doc(db, "routes", targetRouteId);
 
-    const route: RouteDoc = {
+    // 🐝 pendingBees（未受取のハチ）を1増やす
+    // Firestoreの increment 関数を使うことで、同時に複数人から送られても正確に加算されます
+    await updateDoc(routeRef, {
+      pendingBees: increment(1)
+    });
+
+    return Response.json({ success: true });
+  } catch (error) {
+    console.error("ミツバチ送信エラー:", error);
+    return Response.json({ error: "送信失敗" }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/share-to-orchard/route.ts">
+import { db } from "@/lib/firebase";
+import { addDoc, collection } from "firebase/firestore";
+
+export async function POST(req: Request) {
+  try {
+    const { userId, routeId, goal, comment, variety, note, source,
+      moodScore, stepDay, stepTitle, diagnosisText, chartData } = await req.json();
+
+    if (!userId || !routeId) {
+      return Response.json({ error: "userId と routeId が必要" }, { status: 400 });
+    }
+
+    await addDoc(collection(db, "orchard_posts"), {
       userId,
-      goal,
-      durationDays,
-      message: message ?? "",
-      summary,
-      steps: stepsWithState,
-      progress: 0,
+      routeId,
+      goal: goal || "",
+      comment: comment || "",
+      variety: variety || "forest",
+      note: note || "",
+      source: source || "garden",
+      moodScore: moodScore || null,
+      stepDay: stepDay || null,
+      stepTitle: stepTitle || null,
+      diagnosisText: diagnosisText || null,
+      chartData: chartData || null,
       createdAt: new Date().toISOString(),
-      phases: body.phases ?? [],
-    };
+    });
 
-    const routeId = await saveRoute(route);
-
-    return Response.json({ routeId });
+    return Response.json({ success: true });
   } catch (error) {
     console.error(error);
-    return Response.json(
-      { error: "ルートの保存に失敗しました" },
-      { status: 500 }
-    );
+    return Response.json({ error: "投稿失敗" }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/transcribe-audio/route.ts">
+import { GoogleGenAI } from "@google/genai";
+
+const ai = new GoogleGenAI({
+  vertexai: true,
+  project: process.env.GOOGLE_CLOUD_PROJECT!,
+  location: "us-central1",
+});
+
+export async function POST(req: Request) {
+  try {
+    const { audio, mimeType } = await req.json();
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              data: audio,
+              mimeType: mimeType || "audio/webm",
+            }
+          },
+          {
+            text: "この音声を日本語でそのまま文字起こしてください。余計な説明は不要です。話された内容だけを返してください。"
+          }
+        ]
+      }]
+    });
+
+    const text = response.text?.trim() || "";
+    return Response.json({ text });
+
+  } catch (error) {
+    console.error("文字起こしエラー:", error);
+    return Response.json({ text: "" }, { status: 500 });
   }
 }
 </file>
@@ -221,30 +363,104 @@ export async function POST(req: Request) {
 }
 </file>
 
-<file path="app/api/update-steps/route.ts">
-import { updateStepDone } from "@/lib/firestore";
+<file path="app/api/update-route-status/route.ts">
+import { db } from "@/lib/firebase";
+import { doc, updateDoc } from "firebase/firestore";
 
 export async function POST(req: Request) {
   try {
-    const { routeId, steps } = await req.json();
+    const { routeId, isPublic } = await req.json();
+    const routeRef = doc(db, "routes", routeId);
 
-    if (!routeId || !steps) {
-      return Response.json(
-        { error: "routeId と steps は必須です" },
-        { status: 400 }
-      );
-    }
-
-    await updateStepDone(routeId, steps);
+    await updateDoc(routeRef, {
+      isPublic: isPublic,
+      sharedAt: isPublic ? new Date().toISOString() : null,
+    });
 
     return Response.json({ success: true });
   } catch (error) {
-    console.error(error);
-    return Response.json(
-      { error: "ステップ更新に失敗しました" },
-      { status: 500 }
-    );
+    return Response.json({ error: "更新失敗" }, { status: 500 });
   }
+}
+</file>
+
+<file path="app/username-setup/page.tsx">
+"use client";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { auth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+
+export default function UsernameSetupPage() {
+  const router = useRouter();
+  const [username, setUsername] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (!user) router.push("/");
+    });
+    return () => unsubscribe();
+  }, [router]);
+
+  const handleSave = async () => {
+    if (!username.trim()) return setError("ユーザーネームを入力してください");
+    if (username.length > 20) return setError("20文字以内で入力してください");
+    setSaving(true);
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+      await fetch("/api/save-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: user.uid,
+          displayName: user.displayName,
+          email: user.email,
+          username: username.trim(),
+        }),
+      });
+      router.push("/history");
+    } catch (e) {
+      setError("保存に失敗しました");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-amber-50 flex items-center justify-center p-6">
+      <div className="bg-white rounded-[40px] p-10 max-w-sm w-full shadow-xl border border-orange-100">
+        <div className="text-center mb-8">
+          <div className="text-5xl mb-4">🌱</div>
+          <h1 className="text-2xl font-black text-slate-800 mb-2">旅人の名前を決めよう</h1>
+          <p className="text-sm text-slate-400 font-bold">直売所で表示される名前です</p>
+        </div>
+        <div className="mb-6">
+          <input
+            type="text"
+            value={username}
+            onChange={e => { setUsername(e.target.value); setError(""); }}
+            placeholder="例：たびびと太郎"
+            maxLength={20}
+            className="w-full rounded-2xl border-2 border-orange-100 bg-orange-50 p-4 text-sm font-bold text-slate-700 outline-none focus:border-orange-400 transition-all"
+          />
+          <div className="flex justify-between mt-2">
+            {error ? <p className="text-xs text-red-400 font-bold">{error}</p> : <span />}
+            <p className="text-xs text-slate-300 font-bold ml-auto">{username.length}/20</p>
+          </div>
+        </div>
+        <button
+          onClick={handleSave}
+          disabled={saving || !username.trim()}
+          className="w-full py-4 rounded-2xl font-black text-white bg-orange-500 hover:bg-orange-600 transition disabled:opacity-50"
+        >
+          {saving ? "保存中..." : "この名前で旅を始める 🍎"}
+        </button>
+      </div>
+    </div>
+  );
 }
 </file>
 
@@ -776,6 +992,166 @@ export default config;
 }
 </file>
 
+<file path="app/api/completion-diagnosis/route.ts">
+import { GoogleGenAI } from "@google/genai";
+import { db } from "@/lib/firebase";
+import { doc, updateDoc } from "firebase/firestore";
+
+const ai = new GoogleGenAI({
+  vertexai: true,
+  project: process.env.GOOGLE_CLOUD_PROJECT!,
+  location: "us-central1",
+});
+
+export async function POST(req: Request) {
+  try {
+    const { routeId, goal, appleLogs, stepFeedbacks } = await req.json();
+
+    const appleSection = appleLogs.map((l: any) =>
+      `・${l.createdAt?.slice(0,10)} [${l.variety}] ${l.note || "メモなし"}`
+    ).join("\n");
+
+    const feedbackSection = stepFeedbacks.map((f: any) =>
+      `・「${f.stepTitle}」 難易度:${f.difficulty}/5 達成感:${f.feeling} メモ:${f.memo || "なし"}`
+    ).join("\n");
+
+    const prompt = `あなたは目標達成コーチです。
+    ユーザーが「${goal}」を達成しました。
+    以下のデータをもとに、達成診断と次回への提言を書いてください。
+
+    【リンゴの記録（農園での気分ログ）】
+      ${appleSection || "記録なし"}
+
+    【ステップごとのフィードバック】
+    ${feedbackSection || "記録なし"}
+
+    【出力形式】
+    以下の3つのセクションで書いてください：
+
+    ■ 旅の振り返り（100文字程度）
+    どんな気持ちで取り組んでいたか、山場はどこだったかを具体的に。
+
+    ■ あなたの学習パターン
+    難易度・やる気・達成感のデータから読み取れる傾向を1〜2文で。
+    例：「難しいステップでもやる気が高い傾向があります」など。
+
+    ■ 次の旅への処方箋
+    このパターンを踏まえて、次のルートをどう設計すべきかを具体的に1〜2文で。
+    例：「次は1ステップの量を少し減らし、週2日は余裕の日を入れると継続しやすいでしょう」など。
+
+    最後に称号（例：「静かなる開拓者」）を一行添えてください。
+    温かく、具体的に書いてください。`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
+
+    const diagnosisText = response.text;
+
+    // ★ 診断結果をこのルートに保存しておく
+    const routeRef = doc(db, "routes", routeId);
+    await updateDoc(routeRef, {
+      finalDiagnosis: diagnosisText,
+      completedAt: new Date().toISOString()
+    });
+
+    return Response.json({ diagnosis: diagnosisText });
+  } catch (error) {
+    console.error(error);
+    return Response.json({ diagnosis: "診断に失敗しました。" }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/save-route/route.ts">
+import { saveRoute } from "@/lib/firestore";
+import { RouteDoc } from "@/types/route";
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { userId, goal, durationDays, message, summary, steps } = body;
+
+    if (!userId || !goal || !durationDays || !summary || !steps) {
+      return Response.json(
+        { error: "必要なデータが不足しています" },
+        { status: 400 }
+      );
+    }
+
+    const stepsWithState = steps.map(
+      (
+        step: { title: string; description: string; scheduledDay: number },
+        index: number
+      ) => ({
+        id: crypto.randomUUID(),
+        title: step.title,
+        description: step.description,
+        scheduledDay: step.scheduledDay,
+        done: false,
+      })
+    );
+
+    const route: RouteDoc = {
+      userId,
+      goal,
+      durationDays,
+      message: message ?? "",
+      summary,
+      steps: stepsWithState,
+      progress: 0,
+      createdAt: new Date().toISOString(),
+      phases: body.phases ?? [],
+    };
+
+    const routeId = await saveRoute(route);
+
+    return Response.json({ routeId });
+  } catch (error) {
+    console.error(error);
+    return Response.json(
+      { error: "ルートの保存に失敗しました" },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/api/update-steps/route.ts">
+import { updateStepDone } from "@/lib/firestore";
+
+export async function POST(req: Request) {
+  try {
+    const { routeId, steps, feedback } = await req.json();
+
+    if (!routeId || !steps) {
+      return Response.json(
+        { error: "routeId と steps は必須です" },
+        { status: 400 }
+      );
+    }
+
+    await updateStepDone(routeId, steps);
+
+    if (feedback) {
+  const { db } = await import("@/lib/firebase");
+  const { doc, updateDoc, arrayUnion } = await import("firebase/firestore");
+  await updateDoc(doc(db, "routes", routeId), {
+    stepFeedbacks: arrayUnion({ ...feedback, completedAt: new Date().toISOString() })
+  });
+}
+    return Response.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    return Response.json(
+      { error: "ステップ更新に失敗しました" },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
 <file path="components/Apple.tsx">
 // components/Apple.tsx
 type Props = {
@@ -926,59 +1302,6 @@ export default function HarvestModal({ apples, onClose }: Props) {
 }
 </file>
 
-<file path="components/Header.tsx">
-"use client";
-
-import { useEffect, useState } from "react";
-import { onAuthStateChanged, User } from "firebase/auth";
-import { auth } from "@/lib/firebase";
-import { signInWithGoogle, logout } from "@/lib/auth";
-
-export default function Header() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  return (
-    <header className="mb-6 flex items-center justify-between rounded-2xl bg-white p-4 shadow">
-      <div>
-        <h1 className="text-xl font-bold text-gray-800">Route & Root</h1>
-        <p className="text-sm text-gray-500">
-          {loading
-            ? "確認中..."
-            : user
-            ? `ログイン中: ${user.displayName ?? user.email}`
-            : "未ログイン"}
-        </p>
-      </div>
-
-      {user ? (
-        <button
-          onClick={logout}
-          className="rounded-xl bg-gray-200 px-4 py-2 font-semibold text-gray-700"
-        >
-          ログアウト
-        </button>
-      ) : (
-        <button
-          onClick={signInWithGoogle}
-          className="rounded-xl bg-orange-500 px-4 py-2 font-semibold text-white"
-        >
-          Googleでログイン
-        </button>
-      )}
-    </header>
-  );
-}
-</file>
-
 <file path="lib/apple.ts">
 // lib/apple.ts
 
@@ -1047,6 +1370,396 @@ export type RouteDoc = {
 };
 </file>
 
+<file path="app/map/[routeId]/page.tsx">
+import { getRoute } from "@/lib/firestore";
+import MissionMap from "@/components/MissionMap";
+
+type PageProps = {
+  params: Promise<{
+    routeId: string;
+  }>;
+};
+
+export default async function MapPage({ params }: PageProps) {
+  const { routeId } = await params;
+  const route = await getRoute(routeId);
+
+  const typedRoute = route as {
+    id: string;
+    goal: string;
+    summary: string;
+    progress: number;
+    steps: {
+      id: string;
+      title: string;
+      description: string;
+      scheduledDay: number;
+      done: boolean;
+    }[];
+    phases?: {
+    title: string;
+    startDay: number;
+    endDay: number;
+    description: string;
+  }[];
+  };
+
+  return (
+    <MissionMap
+      routeId={routeId}
+      goal={typedRoute.goal}
+      summary={typedRoute.summary}
+      progress={typedRoute.progress}
+      steps={typedRoute.steps}
+      phases={typedRoute.phases}
+    />
+  );
+}
+</file>
+
+<file path="app/orchard/page.tsx">
+"use client";
+import { useEffect, useState } from "react";
+import { db, auth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import { collection, query, orderBy, limit, getDocs } from "firebase/firestore";
+import Link from "next/link";
+import { APPLE_COLORS, APPLE_NAMES } from "@/lib/apple";
+
+type OrchardPost = {
+  id: string;
+  routeId: string; // ✅ 追加
+  userId: string;  // ✅ 追加
+  goal?: string;
+  comment?: string;
+  variety?: string;
+  note?: string;
+  source?: string;
+  moodScore?: number;
+  stepDay?: number;
+  stepTitle?: string;
+  diagnosisText?: string;
+  chartData?: any;
+  createdAt: string;
+  username?: string;
+};
+
+export default function OrchardPage() {
+  const [posts, setPosts] = useState<OrchardPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [keyword, setKeyword] = useState("");
+  const [selectedPost, setSelectedPost] = useState<OrchardPost | null>(null);
+  
+  // ✅ ミツバチ送信状態
+  const [sendingBee, setSendingBee] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async () => {
+      try {
+        const q = query(
+          collection(db, "orchard_posts"),
+          orderBy("createdAt", "desc"),
+          limit(20)
+        );
+        const snap = await getDocs(q);
+        setPosts(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as OrchardPost[]);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // ✅ ミツバチを送る処理
+  const handleSendBee = async (targetRouteId: string, targetUserId: string) => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) return alert("ログインしてください🐝");
+    if (currentUser.uid === targetUserId) return alert("自分の旅には送れません🐝");
+    if (sendingBee) return;
+
+    setSendingBee(true);
+    try {
+      const res = await fetch("/api/send-bee", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetRouteId,
+          senderUid: currentUser.uid,
+        }),
+      });
+      if (res.ok) {
+        alert("ミツバチがあなたの応援を届けに行きました！🐝✨");
+      } else {
+        alert("ミツバチが迷子になったようです。");
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSendingBee(false);
+    }
+  };
+
+  const filtered = keyword
+    ? posts.filter(p => p.goal?.includes(keyword) || p.comment?.includes(keyword))
+    : posts;
+
+  if (loading) return (
+    <div className="flex min-h-screen items-center justify-center bg-amber-50">
+      <div className="animate-spin h-10 w-10 border-4 border-orange-500 border-t-transparent rounded-full" />
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-amber-50 p-6 pb-24">
+      <div className="mx-auto max-w-2xl">
+        <div className="mb-8">
+          <h1 className="text-3xl font-black text-orange-900 mb-1">🌳 直売所</h1>
+          <p className="text-sm text-orange-600/70">仲間のリンゴと知恵が集まる場所</p>
+        </div>
+
+        <div className="mb-6">
+          <input
+            type="text"
+            value={keyword}
+            onChange={e => setKeyword(e.target.value)}
+            placeholder="目標キーワードで絞り込む..."
+            className="w-full rounded-2xl border-2 border-orange-100 bg-white p-4 text-sm font-bold text-slate-700 outline-none focus:border-orange-300 transition-all"
+          />
+        </div>
+
+        {filtered.length === 0 ? (
+          <div className="text-center py-20 bg-white rounded-[40px] border-4 border-dashed border-orange-100">
+            <p className="text-slate-400 font-bold">まだおすそわけされた旅がありません</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {filtered.map((post) => (
+              <button
+                key={post.id}
+                onClick={() => setSelectedPost(post)}
+                className="w-full text-left bg-white rounded-[28px] p-6 shadow-sm border border-orange-100 hover:border-orange-300 hover:shadow-md transition-all"
+              >
+                <div className="flex items-start gap-4 mb-3">
+                  {post.variety && (
+                    <img src={`/images/apple-${post.variety}.svg`} className="w-12 h-12 object-contain drop-shadow-md shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    {post.goal && <h2 className="text-base font-black text-slate-800 truncate">{post.goal}</h2>}
+                    <p className="text-xs text-slate-400 font-bold mt-0.5">
+                      {post.username ? `@${post.username} ・ ` : ""}
+                      {post.createdAt ? new Date(post.createdAt).toLocaleDateString("ja-JP") : ""}
+                    </p>
+                  </div>
+                  <span className={`shrink-0 text-[10px] font-black px-3 py-1 rounded-full ${
+                    post.source === "completion" ? "bg-emerald-100 text-emerald-700" : "bg-orange-100 text-orange-700"
+                  }`}>
+                    {post.source === "completion" ? "✅ 達成" : "🍎 シェア"}
+                  </span>
+                </div>
+                {post.comment && (
+                  <p className="text-sm text-slate-600 font-bold line-clamp-2 mb-2">💬 {post.comment}</p>
+                )}
+                {post.diagnosisText && (
+                  <p className="text-xs text-slate-400 line-clamp-2">🤖 {post.diagnosisText}</p>
+                )}
+                <p className="text-[10px] text-orange-400 font-black mt-3 text-right">タップして詳細を見る →</p>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-8 text-center">
+          <Link href="/history" className="text-sm font-bold text-orange-400 underline">
+            ← 旅の記録へ戻る
+          </Link>
+        </div>
+      </div>
+
+      {/* 詳細モーダル */}
+      {selectedPost && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          style={{ background: "rgba(0,0,0,0.7)" }}
+          onClick={() => setSelectedPost(null)}
+        >
+          <div
+            className="bg-white w-full sm:max-w-lg rounded-t-[40px] sm:rounded-[40px] overflow-y-auto"
+            style={{ maxHeight: "90vh" }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* リンゴヘッダー */}
+            {selectedPost.variety && (
+              <div className="flex items-center justify-center pt-8 pb-4 relative" style={{ background: "linear-gradient(180deg, #fff7ed 0%, #ffffff 100%)" }}>
+                <img src={`/images/apple-${selectedPost.variety}.svg`} className="w-20 h-20 object-contain drop-shadow-xl" />
+                
+                {/* ✅ ミツバチボタンを右上に配置 */}
+                <button
+                  onClick={() => {
+                    if (selectedPost.routeId && selectedPost.userId) {
+                      handleSendBee(selectedPost.routeId, selectedPost.userId);
+                    }
+                  }}
+                  disabled={sendingBee || auth.currentUser?.uid === selectedPost.userId}
+                  style={{
+                    position: "absolute",
+                    top: "20px",
+                    right: "24px",
+                    fontSize: "28px",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    transition: "transform 0.2s",
+                  }}
+                  className="hover:scale-125 disabled:opacity-30 grayscale hover:grayscale-0"
+                  title="応援のミツバチを送る 🐝"
+                >
+                  {sendingBee ? "⏳" : "🐝"}
+                </button>
+              </div>
+            )}
+
+            <div className="p-6">
+              {/* 目標 + バッジ */}
+              <div className="flex items-start justify-between gap-3 mb-4">
+                <div>
+                  {selectedPost.goal && <h2 className="text-xl font-black text-slate-800">{selectedPost.goal}</h2>}
+                  <p className="text-xs text-slate-400 font-bold mt-1">
+                    {selectedPost.username ? `@${selectedPost.username} ・ ` : ""}
+                    {selectedPost.createdAt ? new Date(selectedPost.createdAt).toLocaleString("ja-JP") : ""}
+                  </p>
+                </div>
+                <span className={`shrink-0 text-[10px] font-black px-3 py-1 rounded-full ${
+                  selectedPost.source === "completion" ? "bg-emerald-100 text-emerald-700" : "bg-orange-100 text-orange-700"
+                }`}>
+                  {selectedPost.source === "completion" ? "✅ 目標達成" : "🍎 りんごシェア"}
+                </span>
+              </div>
+
+              {/* コメント */}
+              {selectedPost.comment && (
+                <div className="bg-amber-50 rounded-2xl p-4 mb-4 border border-amber-100">
+                  <p className="text-[9px] font-black text-amber-400 uppercase mb-1">コメント</p>
+                  <p className="text-sm text-slate-700 font-bold leading-relaxed">💬 {selectedPost.comment}</p>
+                </div>
+              )}
+
+              {/* メモ */}
+              {selectedPost.note && (
+                <div className="bg-stone-50 rounded-2xl p-4 mb-4 border border-stone-100">
+                  <p className="text-[9px] font-black text-stone-400 uppercase mb-1">メモ</p>
+                  <p className="text-sm text-stone-600 font-bold leading-relaxed">{selectedPost.note}</p>
+                </div>
+              )}
+
+              {/* AI診断 */}
+              {selectedPost.diagnosisText && (
+                <div className="bg-blue-50 rounded-2xl p-5 mb-4 border border-blue-100">
+                  <p className="text-[9px] font-black text-blue-400 uppercase mb-3">🤖 AI達成診断</p>
+                  <p className="text-sm text-slate-700 font-bold leading-relaxed whitespace-pre-wrap">{selectedPost.diagnosisText}</p>
+                </div>
+              )}
+
+              {/* やる気グラフ */}
+              {selectedPost.chartData?.energies?.length > 0 && (
+                <div className="bg-slate-50 rounded-2xl p-5 mb-4 border border-slate-100">
+                  <p className="text-[9px] font-black text-slate-400 uppercase mb-4">📊 ステップごとのやる気 & 難易度</p>
+                  <div className="flex items-end gap-2 h-20 mb-3">
+                    {selectedPost.chartData.energies.map((e: number, i: number) => {
+                      const d = selectedPost.chartData.difficulties?.[i] || 3;
+                      const feeling = selectedPost.chartData.feelings?.[i];
+                      const barColor = feeling === "バッチリ" ? "#10b981" : feeling === "微妙" ? "#ef4444" : "#f97316";
+                      const face = d >= 4 ? "😵" : d <= 2 ? "😌" : "😐";
+                      return (
+                        <div key={i} className="flex flex-col items-center flex-1 gap-1">
+                          <span style={{ fontSize: "12px" }}>{face}</span>
+                          <div style={{ width: "100%", height: `${e * 13}px`, background: barColor, borderRadius: "4px 4px 0 0", opacity: 0.85, transition: "height 0.3s" }} />
+                          <span style={{ fontSize: "8px", color: "#94a3b8" }}>{i + 1}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* 凡例などは省略せず元のロジックを維持 */}
+                </div>
+              )}
+
+              <button
+                onClick={() => setSelectedPost(null)}
+                className="w-full py-4 rounded-2xl font-black text-sm text-white bg-orange-500 hover:bg-orange-600 transition"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="components/Header.tsx">
+"use client";
+import { useEffect, useState } from "react";
+import { onAuthStateChanged, User } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { signInWithGoogle, logout } from "@/lib/auth";
+import { useRouter } from "next/navigation";
+
+export default function Header() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const router = useRouter();
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogin = async () => {
+  try {
+    const user = await signInWithGoogle();
+    const res = await fetch(`/api/get-user?uid=${user.uid}`);
+    const data = await res.json();
+
+    if (!data.exists || !data.username) {
+      // username未設定の場合のみセットアップへ
+      router.push("/username-setup");
+    } else {
+      // 既存ユーザーはそのまま
+      router.push("/history");
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  };
+
+  return (
+    <header className="mb-6 flex items-center justify-between rounded-2xl bg-white p-4 shadow">
+      <div>
+        <h1 className="text-xl font-bold text-gray-800">Route & Root</h1>
+        <p className="text-sm text-gray-500">
+          {loading ? "確認中..." : user ? `ログイン中: ${user.displayName ?? user.email}` : "未ログイン"}
+        </p>
+      </div>
+      {user ? (
+        <button onClick={logout} className="rounded-xl bg-gray-200 px-4 py-2 font-semibold text-gray-700">
+          ログアウト
+        </button>
+      ) : (
+        <button onClick={handleLogin} className="rounded-xl bg-orange-500 px-4 py-2 font-semibold text-white">
+          Googleでログイン
+        </button>
+      )}
+    </header>
+  );
+}
+</file>
+
 <file path="app/api/generate-apple/route.ts">
 import { GoogleGenAI, Type } from "@google/genai";
 
@@ -1105,7 +1818,7 @@ export async function POST(req: Request) {
 
     // 3. Geminiを呼び出し（Vision機能を使用）
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash", // 画像解析が得意で高速なモデル
+      model: "gemini-2.5-flash",// 画像解析が得意で高速なモデル
       contents: [{ role: "user", parts: contentParts }],
     });
 
@@ -1124,507 +1837,6 @@ export async function POST(req: Request) {
       message: "木が静かに成長を見守っています。" 
     });
   }
-}
-</file>
-
-<file path="app/history/page.tsx">
-"use client";
-
-import { useEffect, useState } from "react";
-import { onAuthStateChanged, User } from "firebase/auth";
-import { auth } from "@/lib/firebase";
-import { getUserRoutes } from "@/lib/firestore";
-import { RouteDoc } from "@/types/route";
-import Link from "next/link";
-
-type RouteWithId = RouteDoc & { id: string };
-
-export default function HistoryPage() {
-  const [user, setUser] = useState<User | null>(null);
-  const [routes, setRoutes] = useState<RouteWithId[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"active" | "done">("active");
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
-        try {
-          const data = await getUserRoutes(currentUser.uid);
-          setRoutes(data);
-        } catch (err) {
-          console.error(err);
-        }
-      }
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const filteredRoutes = routes.filter((r) =>
-    tab === "active" ? r.progress < 100 : r.progress === 100
-  );
-
-  if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-amber-50">
-        <div className="h-10 w-10 animate-spin rounded-full border-4 border-orange-500 border-t-transparent" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-amber-50">
-        <p className="font-bold text-gray-500">ログインしてください</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-amber-50 p-6 pb-24">
-      <div className="mx-auto max-w-2xl">
-
-        {/* ヘッダー */}
-        <div className="mb-6 flex items-end justify-between">
-          <div>
-            <h1 className="text-3xl font-black text-orange-900">📜 旅の記録</h1>
-            <p className="mt-1 text-sm text-orange-600/70">これまでの目標一覧</p>
-          </div>
-          <Link
-            href="/"
-            className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-gray-500 shadow hover:bg-gray-50"
-          >
-            ＋ 新しい旅へ
-          </Link>
-        </div>
-
-        {/* タブ */}
-        <div className="mb-6 flex gap-2">
-          <button
-            onClick={() => setTab("active")}
-            className={`rounded-full px-5 py-2 text-sm font-bold transition ${
-              tab === "active"
-                ? "bg-orange-500 text-white shadow-md"
-                : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-50"
-            }`}
-          >
-            🚶 進行中
-            {routes.filter(r => r.progress < 100).length > 0 && (
-              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
-                tab === "active" ? "bg-white/30 text-white" : "bg-orange-100 text-orange-600"
-              }`}>
-                {routes.filter(r => r.progress < 100).length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setTab("done")}
-            className={`rounded-full px-5 py-2 text-sm font-bold transition ${
-              tab === "done"
-                ? "bg-emerald-500 text-white shadow-md"
-                : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-50"
-            }`}
-          >
-            ✅ 完了
-            {routes.filter(r => r.progress === 100).length > 0 && (
-              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
-                tab === "done" ? "bg-white/30 text-white" : "bg-emerald-100 text-emerald-600"
-              }`}>
-                {routes.filter(r => r.progress === 100).length}
-              </span>
-            )}
-          </button>
-        </div>
-
-        {/* ルート一覧 */}
-        {filteredRoutes.length === 0 ? (
-          <div className="rounded-3xl border-4 border-dashed border-orange-100 bg-white py-16 text-center">
-            <p className="text-slate-400">
-              {tab === "active" ? "進行中の旅はありません。" : "完了した旅はまだありません。"}
-            </p>
-            {tab === "active" && (
-              <Link href="/" className="mt-4 inline-block font-bold text-orange-500 underline">
-                新しい旅を始める
-              </Link>
-            )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {filteredRoutes.map((route) => {
-              const completedCount = route.steps.filter((s) => s.done).length;
-              const totalCount = route.steps.length;
-              const progressPercent =
-                totalCount === 0 ? 0 : Math.round((completedCount / totalCount) * 100);
-              const isCompleted = progressPercent === 100;
-              const createdDate = new Date(route.createdAt).toLocaleDateString("ja-JP");
-
-              return (
-                <div
-                  key={route.id}
-                  className={`rounded-2xl border-2 bg-white p-5 shadow-sm transition hover:shadow-md ${
-                    isCompleted ? "border-emerald-200" : "border-orange-100"
-                  }`}
-                >
-                  {/* 目標名 + 状態バッジ */}
-                  <div className="mb-3 flex items-start justify-between gap-2">
-                    <h2 className="text-lg font-black text-slate-800">{route.goal}</h2>
-                    <span
-                      className={`shrink-0 rounded-full px-3 py-1 text-xs font-bold ${
-                        isCompleted
-                          ? "bg-emerald-100 text-emerald-700"
-                          : "bg-orange-100 text-orange-700"
-                      }`}
-                    >
-                      {isCompleted ? "✅ 完了" : "🚶 進行中"}
-                    </span>
-                  </div>
-
-                  {/* 進捗バー */}
-                  <div className="mb-3">
-                    <div className="mb-1 flex justify-between text-xs text-gray-400">
-                      <span>{completedCount}/{totalCount} ステップ完了</span>
-                      <span>{progressPercent}%</span>
-                    </div>
-                    <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          isCompleted ? "bg-emerald-400" : "bg-orange-400"
-                        }`}
-                        style={{ width: `${progressPercent}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* メタ情報 */}
-                  <p className="mb-4 text-xs text-gray-400">
-                    📅 {createdDate}　／　{route.durationDays}日間プラン
-                  </p>
-
-                  {/* アクションボタン */}
-                  <div className="flex gap-2">
-                    <Link
-                      href={`/map/${route.id}`}
-                      className="flex-1 rounded-xl bg-orange-500 py-2 text-center text-sm font-bold text-white transition hover:bg-orange-600"
-                    >
-                      🗺️ マップを見る
-                    </Link>
-                    <Link
-                      href={`/garden/${route.id}`}
-                      className="flex-1 rounded-xl bg-emerald-500 py-2 text-center text-sm font-bold text-white transition hover:bg-emerald-600"
-                    >
-                      🍎 農園へ
-                    </Link>
-                    <Link
-                      href={`/collection/${user.uid}?from=${route.id}`}
-                      className="flex-1 rounded-xl bg-slate-200 py-2 text-center text-sm font-bold text-slate-600 transition hover:bg-slate-300"
-                    >
-                      📦 リンゴ
-                    </Link>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="app/map/[routeId]/page.tsx">
-import { getRoute } from "@/lib/firestore";
-import MissionMap from "@/components/MissionMap";
-
-type PageProps = {
-  params: Promise<{
-    routeId: string;
-  }>;
-};
-
-export default async function MapPage({ params }: PageProps) {
-  const { routeId } = await params;
-  const route = await getRoute(routeId);
-
-  const typedRoute = route as {
-    id: string;
-    goal: string;
-    summary: string;
-    progress: number;
-    steps: {
-      id: string;
-      title: string;
-      description: string;
-      scheduledDay: number;
-      done: boolean;
-    }[];
-    phases?: {
-    title: string;
-    startDay: number;
-    endDay: number;
-    description: string;
-  }[];
-  };
-
-  return (
-    <MissionMap
-      routeId={routeId}
-      goal={typedRoute.goal}
-      summary={typedRoute.summary}
-      progress={typedRoute.progress}
-      steps={typedRoute.steps}
-      phases={typedRoute.phases}
-    />
-  );
-}
-</file>
-
-<file path="types/log.ts">
-export type LogDoc = {
-  userId: string;
-  routeId: string;
-  routeName: string;
-  moodScore: number;
-  note: string;
-  appleColor: string;
-  appleSize: number;
-  comment: string;
-  createdAt: string;
-  variety: 'sun' | 'moon' | 'midnight' | 'forest' | 'rare'; // ★これを追加
-};
-</file>
-
-<file path="app/collection/[userId]/page.tsx">
-"use client";
-import { useEffect, useState, useMemo } from "react";
-import { useParams, useSearchParams } from "next/navigation";
-import Link from "next/link";
-import { getUserLogs, deleteUserLog } from "@/lib/firestore";
-import { AppleVariety, APPLE_NAMES, APPLE_COLORS } from "@/lib/apple";
-
-type AppleLog = {
-  id: string;
-  variety: AppleVariety;
-  note: string;
-  moodScore: number;
-  createdAt: string;
-  routeId: string; 
-  routeName?: string;
-  comment?: string;
-};
-
-// まとめた後のデータ型
-type AppleGroup = {
-  variety: AppleVariety;
-  count: number;
-  color: string;
-  ids: string[]; // 削除用にIDを溜めておく
-  memos: {
-    id: string;
-    text: string;
-    comment?: string;
-    date: string;
-  }[];
-};
-
-export default function CollectionPage() {
-  const params = useParams();
-  const userId = params?.userId as string; 
-  const searchParams = useSearchParams();
-  const fromRouteId = searchParams.get("from") || "test";
-
-  const [apples, setApples] = useState<AppleLog[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isSelectMode, setIsSelectMode] = useState(false);
-  const [selectedVarietyKeys, setSelectedVarietyKeys] = useState<string[]>([]); // "目標名-品種" で選択管理
-
-  useEffect(() => {
-    if (!userId) return;
-    async function loadApples() {
-      try {
-        const data = await getUserLogs(userId);
-        setApples(data as AppleLog[]);
-      } catch (error) {
-        console.error("❌ 取得エラー:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadApples();
-  }, [userId]);
-
-  // ★ 目標 ＞ 品種 ごとにがっちゃんこするロジック
-  const groupedData = useMemo(() => {
-    const groups: Record<string, Record<string, AppleGroup>> = {};
-
-    apples.forEach((apple) => {
-      const rName = apple.routeName || "その他の目標";
-      const v = apple.variety;
-
-      if (!groups[rName]) groups[rName] = {};
-
-      if (!groups[rName][v]) {
-        groups[rName][v] = {
-          variety: v,
-          count: 0,
-          color: APPLE_COLORS[v] || "#10b981",
-          ids: [],
-          memos: []
-        };
-      }
-
-      groups[rName][v].count += 1;
-      groups[rName][v].ids.push(apple.id);
-      groups[rName][v].memos.push({
-        id: apple.id,
-        text: apple.note || "（メモなし）",
-        comment: apple.comment,
-        date: new Date(apple.createdAt).toLocaleDateString()
-      });
-    });
-
-    return groups;
-  }, [apples]);
-
-  const toggleSelect = (routeName: string, variety: string) => {
-    const key = `${routeName}-${variety}`;
-    setSelectedVarietyKeys(prev => 
-      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
-    );
-  };
-
-  const handleDelete = async () => {
-    const allSelectedIds = selectedVarietyKeys.flatMap(key => {
-      const [rName, v] = key.split("-");
-      return groupedData[rName][v].ids;
-    });
-
-    if (allSelectedIds.length === 0) return;
-    if (!confirm(`${allSelectedIds.length}個のリンゴを土に還しますか？`)) return;
-
-    try {
-      setLoading(true);
-      await Promise.all(allSelectedIds.map(id => deleteUserLog(id)));
-      setApples(prev => prev.filter(a => !allSelectedIds.includes(a.id)));
-      setSelectedVarietyKeys([]);
-      setIsSelectMode(false);
-    } catch (e) {
-      alert("削除に失敗しました");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-orange-50 p-6 pb-32">
-      <header className="max-w-4xl mx-auto mb-10 flex justify-between items-end">
-        <div>
-          <h1 className="text-4xl font-black text-orange-900 mb-2">リンゴ貯蔵庫</h1>
-          <button 
-            onClick={() => { setIsSelectMode(!isSelectMode); setSelectedVarietyKeys([]); }}
-            className="text-[10px] font-black bg-white px-3 py-1 rounded-full shadow-sm text-orange-600 border border-orange-100 hover:bg-orange-50"
-          >
-            {isSelectMode ? "キャンセル" : "整理する"}
-          </button>
-        </div>
-        <div className="bg-white px-6 py-2 rounded-2xl shadow-sm border-2 border-orange-100">
-          <span className="text-sm font-bold text-slate-400">Total</span>
-          <span className="ml-2 text-2xl font-black text-orange-500">{apples.length}</span>
-        </div>
-      </header>
-
-      {loading ? (
-        <div className="flex justify-center py-20"><div className="animate-spin h-10 w-10 border-4 border-orange-500 border-t-transparent rounded-full" /></div>
-      ) : Object.keys(groupedData).length === 0 ? (
-        <div className="text-center py-20 bg-white rounded-[40px] border-4 border-dashed border-orange-100">
-          <p className="text-slate-400 font-bold">まだリンゴがありません。農園で育ててみましょう！</p>
-        </div>
-      ) : (
-        <div className="max-w-4xl mx-auto space-y-16">
-          {Object.entries(groupedData).map(([routeName, varieties]) => (
-            <section key={routeName} className="space-y-6">
-              <h2 className="text-xl font-black text-orange-800 border-l-4 border-orange-500 pl-4">📍 目標: {routeName}</h2>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {Object.entries(varieties).map(([v, data]) => {
-                  const isSelected = selectedVarietyKeys.includes(`${routeName}-${v}`);
-                  return (
-                    <div 
-                      key={v}
-                      onClick={() => isSelectMode && toggleSelect(routeName, v)}
-                      className={`bg-white rounded-[35px] p-6 shadow-xl border-2 transition-all relative overflow-hidden flex flex-col
-                        ${isSelectMode ? 'cursor-pointer' : ''}
-                        ${isSelected ? 'border-red-400 bg-red-50 ring-4 ring-red-100' : 'border-orange-50'}
-                      `}
-                    >
-                      {/* リンゴ情報ヘッダー */}
-                      <div className="flex items-center gap-4 mb-4">
-                        <div className="relative">
-                          <img src={`/images/apple-${data.variety}.svg`} className="w-16 h-16 object-contain drop-shadow-md" />
-                          <span className="absolute -top-2 -right-2 bg-orange-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full shadow-md">
-                            x{data.count}
-                          </span>
-                        </div>
-                        <div>
-                          <h3 className="font-black text-slate-700">{APPLE_NAMES[data.variety] || v}</h3>
-                          <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: data.color }}>Collection</p>
-                        </div>
-                        {isSelectMode && (
-                          <div className={`ml-auto w-6 h-6 rounded-full border-2 flex items-center justify-center ${isSelected ? "bg-red-500 border-red-500 text-white" : "border-slate-200"}`}>
-                            {isSelected && "✓"}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 溜まったメモのリスト */}
-                      <div className="bg-orange-50/50 rounded-2xl p-4 space-y-3 max-h-48 overflow-y-auto custom-scrollbar">
-                        <p className="text-[9px] font-black text-orange-300 uppercase">Growth History</p>
-                        {data.memos.map((memo) => (
-                          <div key={memo.id} className="border-l-2 border-orange-200 pl-3 py-1">
-                            <div className="flex justify-between items-start mb-1">
-                              <p className="text-xs text-slate-700 font-bold leading-tight">{memo.text}</p>
-                              <span className="text-[8px] text-slate-400 shrink-0 ml-2">{memo.date}</span>
-                            </div>
-                            {memo.comment && (
-                              <p className="text-[10px] text-orange-400 font-bold italic leading-tight">「{memo.comment}」</p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
-        </div>
-      )}
-
-      {/* 削除実行ボタン */}
-      {isSelectMode && (
-        <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-10">
-          <button onClick={handleDelete} disabled={selectedVarietyKeys.length === 0} className="bg-red-500 text-white px-8 py-4 rounded-full font-black shadow-2xl disabled:opacity-50 active:scale-95 transition-all">
-            選択した品種をまとめて土に還す 🔥
-          </button>
-        </div>
-      )}
-
-      {/* ナビゲーション */}
-      <footer className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md bg-white/90 backdrop-blur-md p-4 rounded-full shadow-2xl border border-white/50 flex justify-around items-center z-40">
-        <Link href={`/garden/${fromRouteId}`} className="flex flex-col items-center gap-1 hover:opacity-70 transition-opacity">
-          <span className="text-2xl">🌳</span><span className="text-[10px] font-black text-slate-400">農園</span>
-        </Link>
-        <Link href={`/map/${fromRouteId}`} className="flex flex-col items-center gap-1 hover:opacity-70 transition-opacity">
-          <span className="text-2xl">🗺️</span><span className="text-[10px] font-black text-slate-400">マップ</span>
-        </Link>
-        <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center shadow-lg"><span className="text-2xl text-white">📦</span></div>
-        <Link href="/history" className="flex flex-col items-center gap-1 hover:opacity-70 transition-opacity">
-          <span className="text-2xl">📜</span><span className="text-[10px] font-black text-slate-400">履歴</span>
-        </Link>
-      </footer>
-    </div>
-  );
 }
 </file>
 
@@ -1661,52 +1873,22 @@ export default function CollectionPage() {
 }
 </file>
 
-<file path="app/api/save-log/route.ts">
-import { saveLog } from "@/lib/firestore";
-import { APPLE_COLORS, AppleVariety } from "@/lib/apple";
-import { LogDoc } from "@/types/log";
-
-export async function POST(req: Request) {
-  try {
-    const { userId, routeId,routeName, moodScore, note, variety, comment ,createdAt} = await req.json();
-
-    if (!userId || !routeId || !moodScore) {
-      return Response.json(
-        { error: "userId, routeId, moodScore は必須です" },
-        { status: 400 }
-      );
-    }
-
-
-    const log: LogDoc = {
-      userId,
-      routeId,
-      moodScore: Number(moodScore),
-      note: note ?? "",
-      variety: variety || "forest",
-      routeName: routeName || "不明な旅路",
-      appleColor: APPLE_COLORS[variety as AppleVariety] || "#10b981",
-      appleSize: 100, // サイズは固定にするか、型定義から消してもOK
-      comment: comment || "",
-      createdAt: new Date().toISOString(),
-    };
-
-    const logId = await saveLog(log);
-
-    return Response.json({
-      success: true,
-      logId,
-      variety: log.variety,
-      color: log.appleColor
-    });
-  } catch (error) {
-    console.error(error);
-    return Response.json(
-      { error: "感情ログの保存に失敗しました" },
-      { status: 500 }
-    );
-  }
-}
+<file path="types/log.ts">
+export type LogDoc = {
+  userId: string;
+  routeId: string;
+  routeName: string;
+  moodScore: number;
+  note: string;
+  appleColor: string;
+  appleSize: number;
+  comment: string;
+  createdAt: string;
+  variety: 'sun' | 'moon' | 'midnight' | 'forest' | 'rare'; // ★これを追加
+  source?: 'garden' | 'step';
+  stepDay?: number | null;
+  stepTitle?: string | null;
+};
 </file>
 
 <file path="README.md">
@@ -2062,440 +2244,654 @@ MVPで目指すのは、次の体験を完成させることです。
 >>>>>>> b89f4b251892c53cbd23d012b5b8f74fb36efeef
 </file>
 
-<file path="components/MissionMap.tsx">
+<file path="app/api/save-log/route.ts">
+import { saveLog } from "@/lib/firestore";
+import { APPLE_COLORS, AppleVariety } from "@/lib/apple";
+import { LogDoc } from "@/types/log";
+
+export async function POST(req: Request) {
+  try {
+    const { userId, routeId, routeName, moodScore, note, variety, comment, source, stepDay, stepTitle } = await req.json();
+
+    if (!userId || !routeId || !moodScore) {
+      return Response.json({ error: "userId, routeId, moodScore は必須です" }, { status: 400 });
+    }
+
+    const log: LogDoc = {
+      userId,
+      routeId,
+      moodScore: Number(moodScore),
+      note: note ?? "",
+      variety: variety || "forest",
+      routeName: routeName || "不明な旅路",
+      appleColor: APPLE_COLORS[variety as AppleVariety] || "#10b981",
+      appleSize: 100,
+      comment: comment || "",
+      createdAt: new Date().toISOString(),
+      source: source || "garden",
+      stepDay: stepDay ?? null,
+      stepTitle: stepTitle ?? null,
+    };
+
+    const logId = await saveLog(log);
+    return Response.json({ success: true, logId, variety: log.variety, color: log.appleColor });
+  } catch (error) {
+    console.error(error);
+    return Response.json({ error: "感情ログの保存に失敗しました" }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/history/page.tsx">
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { onAuthStateChanged, User } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { getUserRoutes } from "@/lib/firestore";
+import { RouteDoc } from "@/types/route";
 import Link from "next/link";
-import { exportToGoogleTasks } from "@/lib/googleTasks";
-import { getGoogleTasksAccessToken } from "@/lib/auth";
 
-type Step = {
-  id: string;
-  title: string;
-  description: string;
-  scheduledDay: number;
-  done: boolean;
-};
+type RouteWithId = RouteDoc & { id: string };
 
-type Phase = {
-  title: string;
-  startDay: number;
-  endDay: number;
-  description: string;
-};
-
-type Props = {
-  routeId: string;
-  goal: string;
-  summary: string;
-  progress: number;
-  steps: Step[];
-  phases?: Phase[];
-};
-
-function StepCard({
-  step, index, total, unlocked, loading,
-  editingStepId, editTitle, editDescription,
-  onToggle, onEditStart, onEditSave, onEditCancel,
-  onEditTitleChange, onEditDescriptionChange,
-}: {
-  step: Step; index: number; total: number; unlocked: boolean; loading: boolean;
-  editingStepId: string | null; editTitle: string; editDescription: string;
-  onToggle: () => void; onEditStart: () => void; onEditSave: () => void;
-  onEditCancel: () => void; onEditTitleChange: (v: string) => void;
-  onEditDescriptionChange: (v: string) => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
+export default function HistoryPage() {
+  const [user, setUser] = useState<User | null>(null);
+  const [routes, setRoutes] = useState<RouteWithId[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<"active" | "done">("active");
+  const [menuOpen, setMenuOpen] = useState(false); // ← ここに移動
 
   useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => setVisible(entry.isIntersecting),
-      { threshold: 0.1 }
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        try {
+          const data = await getUserRoutes(currentUser.uid);
+          setRoutes(data);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
 
-  const isEditing = editingStepId === step.id;
-  const isLeft = index % 2 === 0;
-  const depthScale = 1 - (total - 1 - index) * 0.04;
+  const filteredRoutes = routes.filter((r) =>
+    tab === "active" ? r.progress < 100 : r.progress === 100
+  );
+
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-amber-50">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-orange-500 border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-amber-50">
+        <p className="font-bold text-gray-500">ログインしてください</p>
+      </div>
+    );
+  }
 
   return (
-    <div
-      ref={ref}
-      className="relative flex items-center py-5"
-      style={{
-        opacity: visible ? (unlocked ? 1 : 0.4) : 0,
-        transform: visible
-          ? `scaleX(${depthScale}) translateY(0)`
-          : `scaleX(${depthScale}) translateY(28px)`,
-        transformOrigin: "center center",
-        transition: "opacity 0.4s ease, transform 0.4s ease",
-      }}
-    >
-      <div className="absolute left-1/2 z-10 -translate-x-1/2">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full" style={{ backgroundColor: "#e0f2fe" }}>
-          <div className={`h-4 w-4 rounded-full border-2 transition-all duration-300 ${
-            step.done ? "border-sky-500 bg-sky-400 shadow-[0_0_12px_rgba(56,189,248,0.7)]"
-            : unlocked ? "border-sky-300 bg-white" : "border-sky-200 bg-sky-100"
-          }`} />
-        </div>
-      </div>
+    <div className="min-h-screen bg-amber-50 p-6 pb-24">
+      <div className="mx-auto max-w-2xl">
 
-      <div className={`w-[44%] ${isLeft ? "mr-auto pl-1" : "ml-auto pr-1"}`}>
-        <div className={`rounded-2xl border p-4 transition-all duration-300 ${
-          step.done ? "border-sky-300 bg-sky-100/80 shadow-md"
-          : unlocked ? "border-sky-200 bg-white shadow-lg"
-          : "border-sky-100 bg-sky-50/60"
-        }`}>
-          {!unlocked && <p className="mb-1 text-xs text-sky-300">🔒 前を完了してください</p>}
-          <p className={`mb-1 text-xs font-bold ${step.done ? "text-sky-500" : unlocked ? "text-sky-400" : "text-sky-300"}`}>
-            Day {step.scheduledDay}
-          </p>
+        {/* ヘッダー */}
+        <div className="mb-6 flex items-end justify-between relative">
+          <div>
+            <h1 className="text-3xl font-black text-orange-900">📜 旅の記録</h1>
+            <p className="mt-1 text-sm text-orange-600/70">これまでの目標一覧</p>
+          </div>
 
-          {isEditing ? (
-            <div className="space-y-2">
-              <input type="text" value={editTitle} onChange={(e) => onEditTitleChange(e.target.value)}
-                className="w-full rounded-lg border border-sky-300 bg-sky-50 p-2 text-sm font-bold text-sky-900 focus:outline-none" />
-              <textarea value={editDescription} onChange={(e) => onEditDescriptionChange(e.target.value)}
-                className="w-full rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs text-sky-700 focus:outline-none" rows={2} />
-              <div className="flex gap-2">
-                <button onClick={onEditSave} className="rounded-lg bg-sky-500 px-3 py-1 text-xs font-bold text-white">保存</button>
-                <button onClick={onEditCancel} className="rounded-lg bg-sky-100 px-3 py-1 text-xs text-sky-600">キャンセル</button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <h3 className={`text-sm font-black leading-snug ${step.done ? "text-sky-400 line-through" : "text-sky-900"}`}>
-                {step.title}
-              </h3>
-              <p className={`mt-1 text-xs leading-relaxed ${step.done ? "text-sky-400" : unlocked ? "text-sky-600" : "text-sky-300"}`}>
-                {step.description}
-              </p>
-              <div className="mt-3 flex items-center justify-between">
-                <label className={`flex cursor-pointer items-center gap-2 ${!unlocked ? "cursor-not-allowed" : ""}`}>
-                  <input type="checkbox" checked={step.done} disabled={loading || !unlocked}
-                    onChange={onToggle} className="h-4 w-4 accent-sky-500" />
-                  <span className="text-xs text-sky-400">{step.done ? "完了！" : "完了にする"}</span>
-                </label>
-                {unlocked && !step.done && (
-                  <button onClick={onEditStart} className="text-xs text-sky-300 underline hover:text-sky-500">編集</button>
-                )}
-              </div>
-            </>
-          )}
+          {/* ハンバーガーボタン */}
+          <div className="relative">
+            <button
+              onClick={() => setMenuOpen(!menuOpen)}
+              className="flex flex-col gap-1.5 p-3 rounded-xl bg-white shadow hover:bg-gray-50 transition"
+            >
+              <span className={`block h-0.5 w-5 bg-gray-600 transition-all ${menuOpen ? "rotate-45 translate-y-2" : ""}`} />
+              <span className={`block h-0.5 w-5 bg-gray-600 transition-all ${menuOpen ? "opacity-0" : ""}`} />
+              <span className={`block h-0.5 w-5 bg-gray-600 transition-all ${menuOpen ? "-rotate-45 -translate-y-2" : ""}`} />
+            </button>
+
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 top-12 z-20 w-44 bg-white rounded-2xl shadow-xl border border-orange-100 overflow-hidden">
+                  <Link
+                    href="/"
+                    onClick={() => setMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 text-sm font-bold text-gray-700 hover:bg-orange-50 transition"
+                  >
+                    <span>✦</span>
+                    <span>新しい旅へ</span>
+                  </Link>
+                  <div className="h-px bg-orange-50" />
+                  <Link
+                    href="/orchard"
+                    onClick={() => setMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 text-sm font-bold text-gray-700 hover:bg-orange-50 transition"
+                  >
+                    <span>🌳</span>
+                    <span>直売所</span>
+                  </Link>
+                  <div className="h-px bg-orange-50" />
+                  <button
+                    onClick={async () => {
+  setMenuOpen(false);
+  const { logout } = await import("@/lib/auth");
+  await logout();
+  window.location.href = "/";
+}}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-sm font-bold text-red-500 hover:bg-red-50 transition"
+                  >
+                    <span>↩</span>
+                    <span>ログアウト</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
+
+        {/* タブ */}
+        <div className="mb-6 flex gap-2">
+          <button
+            onClick={() => setTab("active")}
+            className={`rounded-full px-5 py-2 text-sm font-bold transition ${
+              tab === "active"
+                ? "bg-orange-500 text-white shadow-md"
+                : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            🚶 進行中
+            {routes.filter(r => r.progress < 100).length > 0 && (
+              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
+                tab === "active" ? "bg-white/30 text-white" : "bg-orange-100 text-orange-600"
+              }`}>
+                {routes.filter(r => r.progress < 100).length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setTab("done")}
+            className={`rounded-full px-5 py-2 text-sm font-bold transition ${
+              tab === "done"
+                ? "bg-emerald-500 text-white shadow-md"
+                : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            ✅ 完了
+            {routes.filter(r => r.progress === 100).length > 0 && (
+              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
+                tab === "done" ? "bg-white/30 text-white" : "bg-emerald-100 text-emerald-600"
+              }`}>
+                {routes.filter(r => r.progress === 100).length}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* タブ */}
+        <div className="mb-6 flex gap-2">
+          <button
+            onClick={() => setTab("active")}
+            className={`rounded-full px-5 py-2 text-sm font-bold transition ${
+              tab === "active"
+                ? "bg-orange-500 text-white shadow-md"
+                : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            🚶 進行中
+            {routes.filter(r => r.progress < 100).length > 0 && (
+              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
+                tab === "active" ? "bg-white/30 text-white" : "bg-orange-100 text-orange-600"
+              }`}>
+                {routes.filter(r => r.progress < 100).length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setTab("done")}
+            className={`rounded-full px-5 py-2 text-sm font-bold transition ${
+              tab === "done"
+                ? "bg-emerald-500 text-white shadow-md"
+                : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            ✅ 完了
+            {routes.filter(r => r.progress === 100).length > 0 && (
+              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
+                tab === "done" ? "bg-white/30 text-white" : "bg-emerald-100 text-emerald-600"
+              }`}>
+                {routes.filter(r => r.progress === 100).length}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* ルート一覧 */}
+        {filteredRoutes.length === 0 ? (
+          <div className="rounded-3xl border-4 border-dashed border-orange-100 bg-white py-16 text-center">
+            <p className="text-slate-400">
+              {tab === "active" ? "進行中の旅はありません。" : "完了した旅はまだありません。"}
+            </p>
+            {tab === "active" && (
+              <Link href="/" className="mt-4 inline-block font-bold text-orange-500 underline">
+                新しい旅を始める
+              </Link>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {filteredRoutes.map((route) => {
+              const completedCount = route.steps.filter((s) => s.done).length;
+              const totalCount = route.steps.length;
+              const progressPercent =
+                totalCount === 0 ? 0 : Math.round((completedCount / totalCount) * 100);
+              const isCompleted = progressPercent === 100;
+              const createdDate = new Date(route.createdAt).toLocaleDateString("ja-JP");
+
+              return (
+                <div
+                  key={route.id}
+                  className={`rounded-2xl border-2 bg-white p-5 shadow-sm transition hover:shadow-md ${
+                    isCompleted ? "border-emerald-200" : "border-orange-100"
+                  }`}
+                >
+                  <div className="mb-3 flex items-start justify-between gap-2">
+                    <h2 className="text-lg font-black text-slate-800">{route.goal}</h2>
+                    <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-bold ${
+                      isCompleted ? "bg-emerald-100 text-emerald-700" : "bg-orange-100 text-orange-700"
+                    }`}>
+                      {isCompleted ? "✅ 完了" : "🚶 進行中"}
+                    </span>
+                  </div>
+
+                  <div className="mb-3">
+                    <div className="mb-1 flex justify-between text-xs text-gray-400">
+                      <span>{completedCount}/{totalCount} ステップ完了</span>
+                      <span>{progressPercent}%</span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+                      <div
+                        className={`h-full rounded-full transition-all ${isCompleted ? "bg-emerald-400" : "bg-orange-400"}`}
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <p className="mb-4 text-xs text-gray-400">
+                    📅 {createdDate}　／　{route.durationDays}日間プラン
+                  </p>
+
+                  <div className="flex gap-2">
+                    <Link href={`/map/${route.id}`} className="flex-1 rounded-xl bg-orange-500 py-2 text-center text-sm font-bold text-white transition hover:bg-orange-600">
+                      🗺️ マップを見る
+                    </Link>
+                    <Link href={`/garden/${route.id}`} className="flex-1 rounded-xl bg-emerald-500 py-2 text-center text-sm font-bold text-white transition hover:bg-emerald-600">
+                      🍎 農園へ
+                    </Link>
+                    <Link href={`/collection/${route.id}`} className="flex-1 rounded-xl bg-slate-200 py-2 text-center text-sm font-bold text-slate-600 transition hover:bg-slate-300">
+                      📦 リンゴ
+                    </Link>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
 }
+</file>
 
-export default function MissionMap({ routeId, goal, summary, progress, steps, phases }: Props) {
-  const [localSteps, setLocalSteps] = useState(steps);
-  const [loading, setLoading] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [editingStepId, setEditingStepId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const router = useRouter();
+<file path="app/collection/[routeId]/page.tsx">
+"use client";
+import { useEffect, useState, useMemo } from "react";
+import { useParams } from "next/navigation";
+import Link from "next/link";
+import { getUserLogs } from "@/lib/firestore";
+import { AppleVariety, APPLE_NAMES, APPLE_COLORS } from "@/lib/apple";
+import { auth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 
-  const sortedAsc = [...localSteps].sort((a, b) => a.scheduledDay - b.scheduledDay);
-  const sortedSteps = [...sortedAsc].reverse();
+type AppleLog = {
+  id: string;
+  variety: AppleVariety;
+  note: string;
+  moodScore: number;
+  createdAt: string;
+  routeId: string;
+  routeName?: string;
+  comment?: string;
+  source?: 'garden' | 'step';
+  stepDay?: number | null;
+  stepTitle?: string | null;
+};
 
-  const [openPhases, setOpenPhases] = useState<Set<number>>(() => {
-    if (!phases || phases.length === 0) return new Set([0]);
-    const completedDays = sortedAsc.filter(s => s.done).map(s => s.scheduledDay);
-    const maxCompletedDay = completedDays.length > 0 ? Math.max(...completedDays) : 0;
-    const currentPhaseIndex = phases.findIndex(p => maxCompletedDay >= p.startDay && maxCompletedDay <= p.endDay);
-    return new Set([Math.max(0, currentPhaseIndex)]);
-  });
+export default function CollectionPage() {
+  const params = useParams();
+  const routeId = params?.routeId as string;
 
-  const togglePhase = (index: number) => {
-    setOpenPhases(prev => {
-      const next = new Set(prev);
-      if (next.has(index)) { next.delete(index); } else { next.add(index); }
-      return next;
-    });
-  };
+  const [userId, setUserId] = useState<string | null>(null);
+  const [apples, setApples] = useState<AppleLog[]>([]);
+  const [routeName, setRouteName] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [selectedApple, setSelectedApple] = useState<AppleLog | null>(null);
+
+  const [showShareForm, setShowShareForm] = useState(false);
+  const [shareComment, setShareComment] = useState("");
+  const [sharing, setSharing] = useState(false);
+  const [shared, setShared] = useState(false);
 
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const timer = setTimeout(() => { el.scrollTop = el.scrollHeight; }, 100);
-    return () => clearTimeout(timer);
-  }, []);
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) return;
+      setUserId(user.uid);
+      try {
+        const routeRes = await fetch(`/api/get-route?routeId=${routeId}`);
+        const routeData = await routeRes.json();
+        setRouteName(routeData.goal || "");
 
-  const currentProgress = localSteps.length === 0 ? 0
-    : Math.round((localSteps.filter(s => s.done).length / localSteps.length) * 100);
+        const logsRes = await fetch(`/api/get-user-logs?userId=${user.uid}&routeId=${routeId}`);
+        const logsData = await logsRes.json();
+        setApples((logsData.logs || []) as AppleLog[]);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    });
+    return () => unsubscribe();
+  }, [routeId]);
 
-  // 次にやるべきステップ（サイドバー用）
-  const nextStep = sortedAsc.find(s => !s.done);
+  // 農園: stepDayでグループ化（stepDayなしは日付）
+  // ステップ: stepDayでグループ化
+  const { gardenGroups, stepGroups } = useMemo(() => {
+    const gardenGroups: Record<string, AppleLog[]> = {};
+    const stepGroups: Record<string, AppleLog[]> = {};
 
-  const isUnlocked = (stepId: string) => {
-    const idx = sortedAsc.findIndex(s => s.id === stepId);
-    if (idx === 0) return true;
-    return sortedAsc[idx - 1].done;
-  };
-
-  const handleToggle = async (stepId: string) => {
-    if (!isUnlocked(stepId)) return;
-    const updated = localSteps.map(s => s.id === stepId ? { ...s, done: !s.done } : s);
-    setLocalSteps(updated);
-    setLoading(true);
-    try {
-      const res = await fetch("/api/update-steps", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routeId, steps: updated }),
+    [...apples]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .forEach((apple) => {
+        if (apple.source === 'step') {
+          const key = apple.stepDay != null
+            ? `Day ${apple.stepDay}${apple.stepTitle ? `: ${apple.stepTitle}` : ""}`
+            : "その他";
+          if (!stepGroups[key]) stepGroups[key] = [];
+          stepGroups[key].push(apple);
+        } else {
+          // 農園リンゴはstepDayがあればDay番号、なければ日付でグループ化
+          const key = apple.stepDay != null
+            ? `Day ${apple.stepDay}${apple.stepTitle ? ` (${apple.stepTitle})` : ""} の途中`
+            : new Date(apple.createdAt).toLocaleDateString("ja-JP");
+          if (!gardenGroups[key]) gardenGroups[key] = [];
+          gardenGroups[key].push(apple);
+        }
       });
-      if (!res.ok) throw new Error("更新失敗");
-      router.refresh();
-    } catch (e) {
-      console.error(e);
-      alert("更新に失敗しました");
-    } finally { setLoading(false); }
-  };
 
-  const handleEditStart = (step: Step) => {
-    setEditingStepId(step.id);
-    setEditTitle(step.title);
-    setEditDescription(step.description);
-  };
+    return { gardenGroups, stepGroups };
+  }, [apples]);
 
-  const handleEditSave = async (stepId: string) => {
-    const updated = localSteps.map(s =>
-      s.id === stepId ? { ...s, title: editTitle, description: editDescription } : s
-    );
-    setLocalSteps(updated);
-    setEditingStepId(null);
-    try {
-      await fetch("/api/update-steps", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routeId, steps: updated }),
-      });
-    } catch (e) { console.error(e); }
-  };
+  const sortByDay = (entries: [string, AppleLog[]][]) =>
+    entries.sort(([a], [b]) => {
+      const dayA = parseInt(a.match(/Day (\d+)/)?.[1] || "999");
+      const dayB = parseInt(b.match(/Day (\d+)/)?.[1] || "999");
+      return dayA - dayB;
+    });
 
-  const handleExport = async () => {
-    setExporting(true);
-    try {
-      const token = await getGoogleTasksAccessToken();
-      if (!token) throw new Error("トークンを取得できませんでした");
-      await exportToGoogleTasks(token, goal, localSteps);
-      alert(`「Route & Root: ${goal}」を Google Tasks に書き出しました`);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "書き出しに失敗しました");
-    } finally { setExporting(false); }
-  };
+  const sortedGarden = sortByDay(Object.entries(gardenGroups));
+  const sortedSteps = sortByDay(Object.entries(stepGroups));
+
+  const gardenCount = apples.filter(a => a.source !== 'step').length;
+  const stepCount = apples.filter(a => a.source === 'step').length;
+
+  if (loading) return (
+    <div className="flex min-h-screen items-center justify-center bg-stone-50">
+      <div className="animate-spin h-10 w-10 border-4 border-orange-500 border-t-transparent rounded-full" />
+    </div>
+  );
+
+  const AppleButton = ({ apple, isStep }: { apple: AppleLog; isStep: boolean }) => (
+    <button
+      key={apple.id}
+      onClick={() => setSelectedApple(apple)}
+      className={`group flex flex-col items-center p-3 rounded-[16px] border border-transparent transition-all ${
+        isStep
+          ? "bg-sky-50/50 hover:bg-sky-100 hover:border-sky-200"
+          : "bg-stone-50 hover:bg-orange-50 hover:border-orange-200"
+      }`}
+    >
+      <img src={`/images/apple-${apple.variety}.svg`} alt={apple.variety} className="w-10 h-10 object-contain drop-shadow-md group-hover:scale-110 transition-transform" />
+      <span className={`mt-1 text-[7px] font-black ${isStep ? "text-sky-300" : "text-stone-300"}`}>
+        {new Date(apple.createdAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}
+      </span>
+    </button>
+  );
+
+  const GroupSection = ({ groupKey, groupApples, isStep }: { groupKey: string; groupApples: AppleLog[]; isStep: boolean }) => (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <span className={`text-[11px] font-black ${isStep ? "text-sky-500" : "text-emerald-600"}`}>
+          {groupKey}
+        </span>
+        <div className={`flex-1 h-px ${isStep ? "bg-sky-50" : "bg-stone-100"}`} />
+        <span className="text-[10px] text-stone-300">{groupApples.length}個</span>
+      </div>
+      <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
+        {groupApples.map((apple) => (
+          <AppleButton key={apple.id} apple={apple} isStep={isStep} />
+        ))}
+      </div>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen" style={{ background: "linear-gradient(180deg, #e0f2fe 0%, #f0f9ff 50%, #ffffff 100%)" }}>
+    <div className="min-h-screen bg-stone-50 p-6 pb-32">
+      <header className="max-w-2xl mx-auto mb-10">
+        <p className="text-xs font-black text-stone-300 uppercase tracking-widest mb-2">リンゴ貯蔵庫</p>
+        <h1 className="text-2xl font-black text-stone-800 mb-1">📍 {routeName}</h1>
+        <p className="text-xs text-stone-400 font-bold">
+          農園 {gardenCount}個 ／ ステップ {stepCount}個 ／ 合計 {apples.length}個
+        </p>
+      </header>
 
-      {/* ── トップバー（全幅・PC/SP共通） ── */}
-      <div className="sticky top-0 z-30 w-full px-4 py-3 text-center" style={{ backgroundColor: "#e0f2fe" }}>
-        <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <Link href="/history" className="text-xs font-bold text-sky-500 hover:text-sky-700">
-            ← 旅の記録
-          </Link>
-          <div className="flex-1 text-center">
-            <span className="text-xs font-bold uppercase tracking-widest text-sky-500">✦ Goal ✦</span>
-            <h1 className="text-sm font-black text-sky-900 md:text-base">{goal}</h1>
+      <div className="max-w-2xl mx-auto space-y-10">
+
+        {/* 農園のリンゴ（Day別グループ） */}
+        {gardenCount > 0 && (
+          <section className="bg-white rounded-[32px] p-6 shadow-sm border border-stone-100">
+            <div className="flex items-center gap-2 mb-6">
+              <span>🌳</span>
+              <span className="text-sm font-black text-emerald-600 uppercase tracking-widest">農園の記録</span>
+              <span className="text-[10px] bg-emerald-50 text-emerald-500 font-black px-2 py-0.5 rounded-full border border-emerald-100 ml-auto">{gardenCount}個</span>
+            </div>
+            <div className="space-y-6">
+              {sortedGarden.map(([key, groupApples]) => (
+                <GroupSection key={key} groupKey={key} groupApples={groupApples} isStep={false} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* ステップのリンゴ（Day別グループ） */}
+        {stepCount > 0 && (
+          <section className="bg-white rounded-[32px] p-6 shadow-sm border border-stone-100">
+            <div className="flex items-center gap-2 mb-6">
+              <span>🗺️</span>
+              <span className="text-sm font-black text-sky-600 uppercase tracking-widest">ステップの記録</span>
+              <span className="text-[10px] bg-sky-50 text-sky-500 font-black px-2 py-0.5 rounded-full border border-sky-100 ml-auto">{stepCount}個</span>
+            </div>
+            <div className="space-y-6">
+              {sortedSteps.map(([key, groupApples]) => (
+                <GroupSection key={key} groupKey={key} groupApples={groupApples} isStep={true} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {apples.length === 0 && (
+          <div className="text-center py-20 bg-white rounded-[40px] border-4 border-dashed border-orange-100">
+            <p className="text-slate-400 font-bold">まだリンゴがありません。農園で育ててみましょう！</p>
           </div>
-          <div className="text-right">
-            <span className="text-xs font-bold text-sky-600">{currentProgress}%</span>
-          </div>
-        </div>
-        {/* 進捗バー */}
-        <div className="mx-auto mt-2 max-w-6xl">
-          <div className="h-1 w-full overflow-hidden rounded-full bg-sky-200">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-400 transition-all duration-700"
-              style={{ width: `${currentProgress}%` }}
-            />
-          </div>
-        </div>
-        <div className="pointer-events-none absolute bottom-0 left-0 right-0 translate-y-full h-8"
-          style={{ background: "linear-gradient(to bottom, #e0f2fe, transparent)" }} />
+        )}
       </div>
 
-      {/* ── メインコンテンツ（PC: 2カラム, SP: 1カラム） ── */}
-      <div className="mx-auto max-w-6xl px-4 pt-6 pb-24 md:grid md:grid-cols-[1fr_320px] md:gap-8 md:pb-8">
-
-        {/* ── 左カラム：3Dロードマップ ── */}
-        <div
-          ref={scrollRef}
-          className="relative overflow-y-auto md:h-[calc(100vh-120px)] md:rounded-2xl"
-        >
-          <div className="relative mx-auto max-w-lg px-2">
-            {/* 中央縦ライン */}
-            <div className="pointer-events-none absolute left-1/2 w-px -translate-x-1/2"
-              style={{
-                top: 0, bottom: 0,
-                background: "linear-gradient(to bottom, rgba(125,211,252,0.1), rgba(125,211,252,0.5) 20%, rgba(125,211,252,0.5) 80%, rgba(125,211,252,0.1))",
-              }}
-            />
-
-            <div className="flex flex-col">
-              {phases && phases.length > 0 ? (
-                phases.map((phase, phaseIndex) => {
-                  const phaseSteps = sortedSteps.filter(
-                    s => s.scheduledDay >= phase.startDay && s.scheduledDay <= phase.endDay
-                  );
-                  const phaseDone = phaseSteps.filter(s => s.done).length;
-                  const phaseTotal = phaseSteps.length;
-                  const phaseProgress = phaseTotal === 0 ? 0 : Math.round((phaseDone / phaseTotal) * 100);
-                  const isOpen = openPhases.has(phaseIndex);
-                  const isCompleted = phaseProgress === 100;
-
-                  return (
-                    <div key={phaseIndex} className="mb-4">
-                      <button
-                        onClick={() => togglePhase(phaseIndex)}
-                        className="w-full flex items-center justify-between px-4 py-3 rounded-2xl bg-sky-100/80 border border-sky-200 text-left transition hover:bg-sky-200/60"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="text-lg">{isCompleted ? "✅" : isOpen ? "📖" : "📕"}</span>
-                          <div>
-                            <p className="text-sm font-black text-sky-900">{phase.title}</p>
-                            <p className="text-xs text-sky-500">Day {phase.startDay} 〜 {phase.endDay}　{phaseDone}/{phaseTotal} 完了</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <div className="w-16 h-1.5 rounded-full bg-sky-200 overflow-hidden">
-                            <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${phaseProgress}%` }} />
-                          </div>
-                          <span className="text-sky-400 text-xs">{isOpen ? "▲" : "▼"}</span>
-                        </div>
-                      </button>
-                      {isOpen && (
-                        <div className="mt-2">
-                          {phaseSteps.map((step) => {
-                            const globalIndex = sortedSteps.findIndex(s => s.id === step.id);
-                            return (
-                              <StepCard
-                                key={step.id} step={step} index={globalIndex} total={sortedSteps.length}
-                                unlocked={isUnlocked(step.id)} loading={loading}
-                                editingStepId={editingStepId} editTitle={editTitle} editDescription={editDescription}
-                                onToggle={() => handleToggle(step.id)} onEditStart={() => handleEditStart(step)}
-                                onEditSave={() => handleEditSave(step.id)} onEditCancel={() => setEditingStepId(null)}
-                                onEditTitleChange={setEditTitle} onEditDescriptionChange={setEditDescription}
-                              />
-                            );
-                          })}
-                        </div>
-                      )}
+      {/* タイムカプセルモーダル */}
+      {selectedApple && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.7)" }} onClick={() => {
+        setSelectedApple(null);
+        setShowShareForm(false);
+        setShareComment("");
+        setShared(false);
+          }}>
+          <div className="bg-white rounded-[40px] max-w-sm w-full overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-center h-40" style={{ backgroundColor: APPLE_COLORS[selectedApple.variety] + "22" }}>
+              <img src={`/images/apple-${selectedApple.variety}.svg`} alt={selectedApple.variety} className="w-28 h-28 object-contain drop-shadow-xl" />
+            </div>
+            <div className="p-6">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-black text-stone-800">{APPLE_NAMES[selectedApple.variety]}</h3>
+                  <p className="text-xs text-stone-400 font-bold mt-1">{new Date(selectedApple.createdAt).toLocaleString("ja-JP")}</p>
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  {selectedApple.moodScore && (
+                    <div className="px-3 py-1 rounded-full text-xs font-black" style={{ backgroundColor: APPLE_COLORS[selectedApple.variety] + "22", color: APPLE_COLORS[selectedApple.variety] }}>
+                      Lv.{selectedApple.moodScore}
                     </div>
-                  );
-                })
-              ) : (
-                sortedSteps.map((step, index) => (
-                  <StepCard
-                    key={step.id} step={step} index={index} total={sortedSteps.length}
-                    unlocked={isUnlocked(step.id)} loading={loading}
-                    editingStepId={editingStepId} editTitle={editTitle} editDescription={editDescription}
-                    onToggle={() => handleToggle(step.id)} onEditStart={() => handleEditStart(step)}
-                    onEditSave={() => handleEditSave(step.id)} onEditCancel={() => setEditingStepId(null)}
-                    onEditTitleChange={setEditTitle} onEditDescriptionChange={setEditDescription}
-                  />
-                ))
+                  )}
+                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${selectedApple.source === 'step' ? 'bg-sky-50 text-sky-400 border border-sky-100' : 'bg-emerald-50 text-emerald-400 border border-emerald-100'}`}>
+                    {selectedApple.source === 'step' ? '🗺️ ステップ' : '🌳 農園'}
+                  </span>
+                </div>
+              </div>
+
+              {selectedApple.stepDay != null && (
+                <div className="bg-sky-50 rounded-2xl p-3 mb-3 border border-sky-100">
+                  <p className="text-[9px] font-black text-sky-300 uppercase mb-1">
+                    {selectedApple.source === 'step' ? '完了ステップ' : '育てていた頃のステップ'}
+                  </p>
+                  <p className="text-sm text-sky-700 font-bold">
+                    Day {selectedApple.stepDay}{selectedApple.stepTitle ? `: ${selectedApple.stepTitle}` : ""}
+                  </p>
+                </div>
               )}
-            </div>
-          </div>
-        </div>
-
-        {/* ── 右カラム：サイドバー（PC: sticky, SP: 下部固定ボタンのみ） ── */}
-        <div className="hidden md:block">
-          <div className="sticky top-[88px] space-y-4">
-
-            {/* 概要カード */}
-            <div className="rounded-2xl border border-sky-200 bg-white p-5 shadow-sm">
-              <p className="mb-3 text-xs font-bold uppercase tracking-widest text-sky-400">旅の概要</p>
-              <p className="text-sm text-sky-700">{summary}</p>
-              <div className="mt-4">
-                <div className="mb-1 flex justify-between text-xs text-sky-400">
-                  <span>全体進捗</span>
-                  <span className="font-bold text-sky-600">{currentProgress}%</span>
+              {selectedApple.note && (
+                <div className="bg-stone-50 rounded-2xl p-4 mb-3 border border-stone-100">
+                  <p className="text-[9px] font-black text-stone-300 uppercase mb-2">メモ</p>
+                  <p className="text-sm text-stone-700 font-bold leading-relaxed">{selectedApple.note}</p>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-sky-100">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-400 transition-all duration-700"
-                    style={{ width: `${currentProgress}%` }}
-                  />
+              )}
+              {selectedApple.comment && (
+                <div className="bg-orange-50 rounded-2xl p-4 mb-5 border border-orange-100">
+                  <p className="text-[9px] font-black text-orange-300 uppercase mb-2">
+                    {selectedApple.source === 'step' ? 'フィードバック' : '園主の言葉'}
+                  </p>
+                  <p className="text-sm text-stone-600 font-bold italic leading-relaxed">「{selectedApple.comment}」</p>
                 </div>
-                <p className="mt-1 text-xs text-sky-400">
-                  {localSteps.filter(s => s.done).length} / {localSteps.length} ステップ完了
-                </p>
-              </div>
-            </div>
-
-            {/* 今やるべきタスク */}
-            {nextStep && (
-              <div className="rounded-2xl border-2 border-sky-300 bg-sky-50 p-5 shadow-sm">
-                <p className="mb-2 text-xs font-bold uppercase tracking-widest text-sky-500">
-                  🎯 次のステップ
-                </p>
-                <p className="text-xs font-bold text-sky-400">Day {nextStep.scheduledDay}</p>
-                <p className="mt-1 text-sm font-black text-sky-900">{nextStep.title}</p>
-                <p className="mt-1 text-xs text-sky-600">{nextStep.description}</p>
-                <button
-                  onClick={() => handleToggle(nextStep.id)}
-                  disabled={loading || !isUnlocked(nextStep.id)}
-                  className="mt-3 w-full rounded-xl bg-sky-500 py-2 text-xs font-bold text-white transition hover:bg-sky-600 disabled:opacity-40"
-                >
-                  {isUnlocked(nextStep.id) ? "✓ 完了にする" : "🔒 前のステップを完了してください"}
+              )}
+              <button onClick={() => {
+                setSelectedApple(null);
+                setShowShareForm(false);
+                setShareComment("");
+                setShared(false);
+                }} className="w-full py-4 rounded-2xl font-black text-sm text-white" style={{ backgroundColor: APPLE_COLORS[selectedApple.variety] }}>
+                  閉じる
                 </button>
-              </div>
-            )}
-
-            {/* 完了時メッセージ */}
-            {currentProgress === 100 && (
-              <div className="rounded-2xl border-2 border-emerald-300 bg-emerald-50 p-5 text-center">
-                <p className="text-2xl">🎉</p>
-                <p className="mt-1 text-sm font-black text-emerald-700">旅を完走しました！</p>
-              </div>
-            )}
-
-            {/* アクションボタン */}
-            <div className="space-y-2">
-              <button
-                onClick={handleExport}
-                disabled={exporting}
-                className="w-full rounded-xl bg-blue-500 py-3 text-sm font-bold text-white transition hover:bg-blue-600 disabled:opacity-50"
-              >
-                {exporting ? "書き出し中..." : "Google Tasks に書き出す"}
-              </button>
-              <Link href={`/garden/${routeId}`}
-                className="block w-full rounded-xl bg-emerald-500 py-3 text-center text-sm font-bold text-white transition hover:bg-emerald-600">
-                果樹園へ向かう 🍎
-              </Link>
+              
+              {/* 広場にシェア */}
+{!shared ? (
+  <div style={{marginBottom:"12px"}}>
+    {!showShareForm ? (
+      <button
+        onClick={() => setShowShareForm(true)}
+        style={{width:"100%",padding:"10px",borderRadius:"12px",border:"1.5px solid #e2e8f0",background:"#f8fafc",fontSize:"13px",fontWeight:700,color:"#64748b",cursor:"pointer"}}
+      >
+        🐝 直売所にシェアする
+      </button>
+    ) : (
+      <div style={{background:"#f8fafc",borderRadius:"12px",padding:"12px",border:"1px solid #e2e8f0",marginBottom:"8px"}}>
+        <p style={{fontSize:"11px",fontWeight:700,color:"#94a3b8",marginBottom:"6px"}}>一言コメント（任意）</p>
+        <textarea
+          placeholder="このリンゴについて一言..."
+          value={shareComment}
+          onChange={e => setShareComment(e.target.value)}
+          style={{width:"100%",padding:"8px",borderRadius:"8px",border:"1px solid #e2e8f0",fontSize:"12px",resize:"none",height:"56px",marginBottom:"8px",boxSizing:"border-box" as any}}
+        />
+        <div style={{display:"flex",gap:"8px"}}>
+          <button
+            onClick={() => setShowShareForm(false)}
+            style={{flex:1,padding:"8px",borderRadius:"8px",border:"1px solid #e2e8f0",fontSize:"12px",cursor:"pointer",background:"white"}}
+          >
+            キャンセル
+          </button>
+          <button
+            onClick={async () => {
+              if (!selectedApple) return;
+              setSharing(true);
+              try {
+                await fetch("/api/share-to-orchard", {
+                  method:"POST",
+                  headers:{"Content-Type":"application/json"},
+                  body: JSON.stringify({
+                    userId,
+                    routeId: selectedApple.routeId,
+                    goal: routeName,
+                    comment: shareComment,
+                    variety: selectedApple.variety,
+                    note: selectedApple.note,
+                    source: "collection",
+                    moodScore: selectedApple.moodScore,
+                    stepDay: selectedApple.stepDay,
+                    stepTitle: selectedApple.stepTitle,
+                  }),
+                });
+                setShared(true);
+                setShowShareForm(false);
+              } catch(e) { console.error(e); } finally { setSharing(false); }
+            }}
+            style={{flex:2,padding:"8px",borderRadius:"8px",background:"#3b82f6",color:"white",fontWeight:700,fontSize:"12px",border:"none",cursor:"pointer"}}
+          >
+            {sharing ? "投稿中..." : "投稿する 🐝"}
+          </button>
+        </div>
+      </div>
+    )}
+  </div>
+) : (
+  <div style={{marginBottom:"12px",textAlign:"center",padding:"10px",background:"#f0fdf4",borderRadius:"12px",border:"1px solid #86efac"}}>
+    <span style={{fontSize:"13px",fontWeight:700,color:"#16a34a"}}>🎉 広場に投稿しました！</span>
+  </div>
+)}
             </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* ── SP用 下部ボタン（PCでは非表示） ── */}
-      <div className="fixed bottom-0 left-0 right-0 z-30 px-4 pb-6 pt-4 md:hidden"
-        style={{ background: "linear-gradient(to top, #ffffff 60%, transparent)" }}>
-        <div className="flex flex-col gap-3">
-          <button onClick={handleExport} disabled={exporting}
-            className="w-full rounded-xl bg-blue-500 py-3 font-bold text-white transition hover:bg-blue-600 disabled:opacity-50">
-            {exporting ? "書き出し中..." : "Google Tasks に書き出す"}
-          </button>
-          <Link href={`/garden/${routeId}`}
-            className="w-full rounded-xl bg-emerald-500 py-3 text-center font-bold text-white transition hover:bg-emerald-600">
-            果樹園（Garden）へ向かう 🍎
-          </Link>
-          <Link href="/history"
-            className="w-full rounded-xl bg-sky-100 py-3 text-center font-bold text-sky-600 transition hover:bg-sky-200">
-            📜 旅の記録を見る
-          </Link>
+  
+
+      <footer className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md bg-white/90 backdrop-blur-md p-4 rounded-full shadow-2xl border border-white/50 flex justify-around items-center z-40">
+        <Link href={`/garden/${routeId}`} className="flex flex-col items-center gap-1 hover:opacity-70 transition-opacity">
+          <span className="text-2xl">🌳</span><span className="text-[10px] font-black text-slate-400">農園</span>
+        </Link>
+        <Link href={`/map/${routeId}`} className="flex flex-col items-center gap-1 hover:opacity-70 transition-opacity">
+          <span className="text-2xl">🗺️</span><span className="text-[10px] font-black text-slate-400">マップ</span>
+        </Link>
+        <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center shadow-lg shadow-orange-200">
+          <span className="text-2xl text-white">📦</span>
         </div>
-      </div>
+        <Link href="/history" className="flex flex-col items-center gap-1 hover:opacity-70 transition-opacity">
+          <span className="text-2xl">📜</span><span className="text-[10px] font-black text-slate-400">履歴</span>
+        </Link>
+      </footer>
     </div>
   );
 }
@@ -2610,64 +3006,91 @@ const ai = new GoogleGenAI({
   location: "us-central1",
 });
 
-const stepSchema = {
-  type: Type.OBJECT,
-  properties: {
-    title:        { type: Type.STRING, description: "15文字以内" },
-    description:  { type: Type.STRING, description: "40文字以内" },
-    scheduledDay: { type: Type.INTEGER },
-  },
-  required: ["title", "description", "scheduledDay"],
-};
-
-const phaseSchema = {
-  type: Type.OBJECT,
-  properties: {
-    title:          { type: Type.STRING, description: "フェーズ名（例：基礎固め）" },
-    startDay:       { type: Type.INTEGER },
-    endDay:         { type: Type.INTEGER },
-    description:    { type: Type.STRING, description: "このフェーズの目標を1文で" },
-  },
-  required: ["title", "startDay", "endDay", "description"],
-};
-
-const planSchema = {
-  type: Type.OBJECT,
-  properties: {
-    style:           { type: Type.STRING },
-    styleLabel:      { type: Type.STRING },
-    styleEmoji:      { type: Type.STRING },
-    philosophy:      { type: Type.STRING },
-    tagline:         { type: Type.STRING },
-    suitableFor:     { type: Type.STRING },
-    tradeoff:        { type: Type.STRING },
-    intensityLevel:  { type: Type.INTEGER },
-    recommendedDays: { type: Type.INTEGER },
-    daysComment:     { type: Type.STRING },
-    goal:            { type: Type.STRING },
-    summary:         { type: Type.STRING },
-    steps:           { type: Type.ARRAY, items: stepSchema },
-  },
-  required: [
-    "style", "styleLabel", "styleEmoji",
-    "philosophy", "tagline", "suitableFor", "tradeoff",
-    "intensityLevel", "recommendedDays", "daysComment",
-    "goal", "summary", "steps",
-  ],
-};
+// ... stepSchema, planSchema は既存のまま ...
 
 export async function POST(req: Request) {
   try {
-    const { goal, durationDays, message, userHistory } = await req.json();
+    const { goal, durationDays, message } = await req.json();
 
     if (!goal || !durationDays) {
-      return Response.json(
-        { error: "goal と durationDays は必須です" },
-        { status: 400 }
-      );
+      return Response.json({ error: "goal と durationDays は必須です" }, { status: 400 });
     }
 
-    // ── Step1: Google検索で最新情報を収集 ──
+    // ── 過去の全フィードバックを分析 ──
+    let feedbackContext = "";
+    if (userId) {
+      try {
+        const { db } = await import("@/lib/firebase");
+        const { collection, query, where, getDocs } = await import("firebase/firestore");
+        const snap = await getDocs(query(collection(db, "routes"), where("userId", "==", userId)));
+        const allFeedbacks = snap.docs.flatMap(d => d.data().stepFeedbacks || []);
+
+        if (allFeedbacks.length > 0) {
+          const avgDiff = (allFeedbacks.reduce((s: number, f: any) => s + f.difficulty, 0) / allFeedbacks.length).toFixed(1);
+
+          const feelings = allFeedbacks.map((f: any) => f.feeling).filter(Boolean);
+          const batchiCount = feelings.filter((f: string) => f === "バッチリ").length;
+          const muzuiCount = feelings.filter((f: string) => f === "微妙").length;
+          const maaCount = feelings.filter((f: string) => f === "まあまあ").length;
+          const totalFeelings = feelings.length;
+
+          const avgEnergy = allFeedbacks.filter((f: any) => f.energy).length > 0
+            ? (allFeedbacks.reduce((s: number, f: any) => s + (f.energy || 3), 0) / allFeedbacks.length).toFixed(1)
+            : null;
+
+          const hardMemos = allFeedbacks
+            .filter((f: any) => f.difficulty >= 4 && f.memo)
+            .map((f: any) => `"${f.memo}"`)
+            .slice(0, 5)
+            .join(", ");
+
+          const easyMemos = allFeedbacks
+            .filter((f: any) => f.difficulty <= 2 && f.memo)
+            .map((f: any) => `"${f.memo}"`)
+            .slice(0, 3)
+            .join(", ");
+
+          const totalRoutes = snap.docs.length;
+          const completedRoutes = snap.docs.filter(d => d.data().progress === 100).length;
+
+          const feelingTrend = totalFeelings > 0
+            ? (batchiCount >= maaCount && batchiCount >= muzuiCount
+                ? "バッチリ（余裕があるかも）"
+                : muzuiCount >= batchiCount && muzuiCount >= maaCount
+                ? "微妙（少し詰め込みすぎかも）"
+                : "まあまあ（バランスが良い）")
+            : "データなし";
+
+          feedbackContext = `
+【このユーザーの過去の学習パターン（${totalRoutes}件のルート・${allFeedbacks.length}件のフィードバックから分析）】
+
+■ 達成状況
+- 過去のルート完了率: ${completedRoutes}/${totalRoutes}件完了
+
+■ 難易度の傾向
+- ステップの平均難易度: ${avgDiff}/5
+- 難しいと感じた時のメモ: ${hardMemos || "なし"}
+- 簡単すぎた時のメモ: ${easyMemos || "なし"}
+
+■ やる気・達成感の傾向
+${avgEnergy ? `- 平均やる気スコア: ${avgEnergy}/5` : ""}
+- 達成感の内訳: バッチリ ${batchiCount}回 / まあまあ ${maaCount}回 / 微妙 ${muzuiCount}回
+- 最も多い達成感: ${feelingTrend}
+
+■ このデータを踏まえたプラン調整指示（必ず反映すること）
+${Number(avgDiff) >= 4 ? "- 難易度が高め → 1ステップの量を減らし、より細かく分割すること" : ""}
+${Number(avgDiff) <= 2 ? "- 難易度が低め → もう少し密度を上げてチャレンジングにしてOK" : ""}
+${muzuiCount > batchiCount ? "- 達成感「微妙」が多い → 序盤に簡単なステップを多めに配置し、小さな成功体験を積ませること" : ""}
+${batchiCount > muzuiCount + maaCount ? "- 達成感「バッチリ」が多い → ステップ数を増やすか、1ステップの内容を充実させてOK" : ""}
+${completedRoutes === 0 ? "- まだ完了ルートがない → 短期間で達成感を得やすいプランを優先すること" : ""}
+`;
+        }
+      } catch (e) {
+        console.warn("フィードバック取得失敗:", e);
+      }
+    }
+
+    // ── Google検索で最新情報を収集 ──
     let searchContext = "";
     try {
       const searchResponse = await ai.models.generateContent({
@@ -2689,20 +3112,18 @@ export async function POST(req: Request) {
       });
       searchContext = searchResponse.text ?? "";
     } catch (e) {
-      console.warn("Search grounding skipped:", e);
+      // 検索失敗してもプラン生成は続行
+      console.warn("Search grounding failed, continuing without it:", e);
     }
 
-    // ── Step2: 3プラン生成 + おすすめ選定 ──
+    // ── Step2: 検索情報を注入してプラン生成 ──
     const prompt = `
 あなたは目標達成を支援する、ユーザーの専任コーチです。
 以下の情報をもとに、3つのプランを作成し、その中からユーザーに最適な1つを推薦してください。
 
 目標: ${goal}
 ユーザー希望期間(日): ${durationDays}
-ユーザーのメッセージ: ${message || "なし"}
-
-【ユーザーの過去の実績】
-${userHistory || "過去の旅の記録なし（初回ユーザー）"}
+メッセージ: ${message ?? "なし"}
 
 ${searchContext ? `【Google検索で得た最新情報 - ステップに反映すること】
 ${searchContext}
@@ -2808,267 +3229,6 @@ recommendationMessage: 推薦理由を「ユーザーの状況に寄り添った
       { status: 500 }
     );
   }
-}
-</file>
-
-<file path="app/garden/[routeId]/page.tsx">
-"use client";
-
-import { useState, use, useEffect, useRef } from "react"; 
-import { auth } from "@/lib/firebase"; 
-import { onAuthStateChanged, User } from "firebase/auth";
-import AppleTree from "@/components/AppleTree";
-import HarvestModal from "@/components/HarvestModal";
-import Link from "next/link";
-import { AppleVariety, APPLE_NAMES, APPLE_COLORS } from "@/lib/apple"; 
-
-export default function GardenPage({ params }: { params: Promise<{ routeId: string }> }) {
-  const { routeId } = use(params);
-
-  // 1. 状態管理
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [nutrition, setNutrition] = useState(0);
-  const [hasGrown, setHasGrown] = useState(false);
-  const [useMood, setUseMood] = useState(false); 
-  const [mood, setMood] = useState(3);
-  const [memo, setMemo] = useState("");
-  const [isWatering, setIsWatering] = useState(false);
-  const [showModal, setShowModal] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [aiMessage, setAiMessage] = useState("");
-  const [pendingApples, setPendingApples] = useState<any[]>([]);
-  const [routeName, setRouteName] = useState("");
-  const [variety, setVariety] = useState<AppleVariety>('forest');
-
-  // マルチモーダル用
-  const [image, setImage] = useState<string | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const recognitionRef = useRef<any>(null); // 音声認識用
-
-  const pendingCount = pendingApples.length;
-  const isFull = nutrition >= 100;
-
-  // 2. 音声認識のセットアップ（Web Speech API）
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.lang = 'ja-JP';
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
-
-      recognitionRef.current.onresult = (event: any) => {
-        let transcript = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
-        }
-        setMemo(prev => prev + transcript); // メモ欄に直接書き込む
-      };
-
-      recognitionRef.current.onerror = () => setIsRecording(false);
-      recognitionRef.current.onend = () => setIsRecording(false);
-    }
-  }, []);
-
-  const toggleRecording = () => {
-    if (isRecording) {
-      recognitionRef.current?.stop();
-    } else {
-      setIsRecording(true);
-      recognitionRef.current?.start();
-    }
-  };
-
-  // ... (ログイン・データ取得・自動保存のuseEffectなどは以前と同じ)
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
-    async function fetchRoute() {
-      try {
-        const res = await fetch(`/api/get-route?routeId=${routeId}`);
-        const data = await res.json();
-        setRouteName(data.goal || "無題の目標");
-        setHasGrown(data.hasGrown || false);
-        setNutrition(data.nutrition || 0);
-        setPendingApples(data.pendingApples || []);
-        setVariety(data.currentVariety || 'forest');
-      } catch (e) { console.error(e); } finally { setLoading(false); }
-    }
-    fetchRoute();
-    return () => unsubscribe();
-  }, [routeId]);
-
-  const saveProgress = async (newN: number, newA: any[], curV: string, grown: boolean) => {
-    try {
-      await fetch("/api/update-route-progress", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routeId, nutrition: newN, pendingApples: newA, variety: curV, hasGrown: grown }),
-      });
-    } catch (e) { console.error(e); }
-  };
-
-  const handleGiveNutrition = async () => {
-    if (isFull) return;
-    const hasInput = useMood || memo.trim() || image;
-    if (!hasInput) return alert("今日の頑張りを見せてください🌱");
-
-    setIsWatering(true);
-    try {
-      const response = await fetch("/api/generate-apple", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ moodScore: useMood ? mood : null, note: memo.trim(), image: image }),
-      });
-      const data = await response.json();
-
-      const nextNutrition = Math.min(nutrition + 25, 100);
-      let nextApples = [...pendingApples];
-      const existingIndex = nextApples.findIndex(a => a.variety === data.variety);
-      const newNote = memo.trim() || (image ? "（写真で報告）" : "（養分を注いだ）");
-
-      if (existingIndex !== -1) {
-        nextApples[existingIndex] = {
-          ...nextApples[existingIndex],
-          note: nextApples[existingIndex].note + " | " + newNote,
-          comment: data.message,
-          createdAt: new Date().toISOString()
-        };
-      } else {
-        nextApples.push({ variety: data.variety, note: newNote, moodScore: useMood ? mood : null, comment: data.message, createdAt: new Date().toISOString() });
-      }
-
-      setVariety(data.variety);
-      setPendingApples(nextApples);
-      setNutrition(nextNutrition);
-      const nextHasGrown = nextNutrition === 100 ? true : hasGrown;
-      setHasGrown(nextHasGrown);
-      setAiMessage(data.message);
-      setMemo(""); setImage(null);
-      saveProgress(nextNutrition, nextApples, data.variety, nextHasGrown);
-    } finally { setIsWatering(false); }
-  };
-
-  const handleCloseModal = () => {
-    setShowModal(false); setPendingApples([]); setNutrition(0); setAiMessage("");
-    saveProgress(0, [], variety, true); 
-  };
-
-  let treeLevel = hasGrown ? 2 : (nutrition < 30 ? 0 : nutrition < 60 ? 1 : 2);
-
-  if (loading) return <div className="p-10 text-center font-bold">農園を準備中...</div>;
-
-  return (
-    <div className="min-h-screen bg-orange-50 p-6 pb-32 flex flex-col items-center">
-      <header className="mb-8 text-center">
-        <h1 className="text-3xl font-black text-orange-900">🍎 {routeName} 農園</h1>
-      </header>
-
-      <div className="max-w-5xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 items-start mb-10">
-        
-        {/* 左側：入力エリア（複数同時入力可能UI） */}
-        <div className="bg-white p-8 rounded-[40px] shadow-xl border-4 border-orange-100 space-y-6">
-          <div className="flex justify-between items-center">
-            <h2 className="text-xl font-black text-slate-700">📝 今日の養分</h2>
-            <div className="flex gap-2">
-              {/* 写真追加ボタン */}
-              <label className="cursor-pointer bg-orange-50 p-2 rounded-xl border border-orange-100 hover:bg-orange-100 transition-colors">
-                <span>📷</span>
-                <input type="file" accept="image/*" className="hidden" onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    const r = new FileReader();
-                    r.onloadend = () => setImage(r.result as string);
-                    r.readAsDataURL(file);
-                  }
-                }} />
-              </label>
-              {/* 音声入力ボタン */}
-              <button 
-                onClick={toggleRecording}
-                className={`p-2 rounded-xl border transition-all ${isRecording ? 'bg-red-500 border-red-600 animate-pulse' : 'bg-orange-50 border-orange-100'}`}
-              >
-                <span>{isRecording ? '🛑' : '🎙️'}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* メモ入力（常に表示） */}
-          <div className="relative">
-            <textarea 
-              className="w-full p-4 bg-orange-50/20 border-2 border-orange-100 text-slate-900 font-bold rounded-2xl h-32 outline-none focus:border-orange-500 transition-all text-sm"
-              placeholder={isRecording ? "音声を聞き取っています..." : "写真の説明や頑張りをメモ..."}
-              value={memo} 
-              onChange={(e) => setMemo(e.target.value)} 
-            />
-            {isRecording && <div className="absolute top-2 right-2 flex gap-1"><span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-bounce"></span><span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-bounce [animation-delay:0.2s]"></span></div>}
-          </div>
-
-          {/* 画像プレビュー（ある時だけ表示） */}
-          {image && (
-            <div className="relative w-full h-32 rounded-2xl overflow-hidden border-2 border-orange-200">
-              <img src={image} className="w-full h-full object-cover" />
-              <button onClick={() => setImage(null)} className="absolute top-2 right-2 bg-black/50 text-white w-6 h-6 rounded-full text-xs">✕</button>
-            </div>
-          )}
-
-          <div className="bg-orange-50/50 p-4 rounded-2xl border-2 border-orange-100">
-            <div className="flex items-center justify-between mb-4">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={useMood} onChange={(e) => setUseMood(e.target.checked)} className="w-5 h-5 accent-orange-500" />
-                <span className="font-bold text-slate-700 text-sm">やる気レバー</span>
-              </label>
-              {useMood && <span className="text-orange-500 font-black px-2 py-1 bg-white rounded-lg shadow-sm text-xs">Lv.{mood}</span>}
-            </div>
-            <input type="range" min="1" max="5" value={mood} disabled={!useMood} onChange={(e) => setMood(Number(e.target.value))} className={`w-full ${useMood ? 'accent-orange-500' : 'opacity-30'}`} />
-          </div>
-
-          <button 
-            onClick={handleGiveNutrition} 
-            disabled={isWatering} 
-            className="w-full py-5 text-white font-black rounded-3xl shadow-lg transition-all active:scale-95" 
-            style={{ backgroundColor: APPLE_COLORS[variety] }}
-          >
-            {isWatering ? "吸収中..." : isFull ? `🍎 収穫可能です！` : `養分を注ぐ (${nutrition}%) 💧`}
-          </button>
-        </div>
-
-        {/* 右側：木のエフェクト（省略なし） */}
-        <div className="relative overflow-hidden flex flex-col items-center justify-center bg-white p-8 rounded-[40px] shadow-xl border-4 border-emerald-100 min-h-[480px]">
-          {isWatering && (
-            <div className="absolute inset-0 pointer-events-none z-20">
-              {[...Array(6)].map((_, i) => (
-                <span key={i} className="absolute text-2xl animate-drop" style={{ left: `${20 + i * 15}%`, color: APPLE_COLORS[variety], animationDelay: `${i * 0.1}s` }}>💧</span>
-              ))}
-            </div>
-          )}
-          <AppleTree level={treeLevel} variety={variety === 'rare' ? 'sun' : variety} hasApple={pendingCount > 0} moodScore={useMood ? mood : 3} />
-          <div className="mt-8 w-full max-w-xs text-center">
-            <div className="flex justify-between text-[10px] font-black mb-2 uppercase tracking-widest" style={{ color: APPLE_COLORS[variety] }}>
-              <span>Growth</span><span>{nutrition}%</span>
-            </div>
-            <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden border-2 border-emerald-50">
-              <div className="h-full transition-all duration-1000" style={{ width: `${nutrition}%`, backgroundColor: APPLE_COLORS[variety] }} />
-            </div>
-          </div>
-          {aiMessage && (
-            <div className="mt-6 p-4 bg-orange-50 border-2 border-orange-200 rounded-2xl shadow-sm mx-4 animate-in zoom-in fade-in">
-              <p className="text-[9px] font-black text-orange-400 uppercase mb-1 text-center">園主の言葉</p>
-              <p className="text-sm text-slate-700 font-bold italic text-center">「{aiMessage}」</p>
-            </div>
-          )}
-        </div>
-      </div>
-      
-      <footer className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md bg-white/90 backdrop-blur-md p-4 rounded-full shadow-2xl flex justify-around items-center z-40">
-        <Link href={`/map/${routeId}`} className="flex flex-col items-center gap-1">🗺️<span className="text-[10px] font-black text-slate-400">マップ</span></Link>
-        <Link href={`/collection/${user?.uid || 'guest'}?from=${routeId}`} className="flex flex-col items-center gap-1">📦<span className="text-[10px] font-black text-slate-400">貯蔵庫</span></Link>
-        <Link href="/history" className="flex flex-col items-center gap-1">📜<span className="text-[10px] font-black text-slate-400">履歴</span></Link>
-      </footer>
-      {showModal && <HarvestModal apples={pendingApples} onClose={handleCloseModal} />}
-      <style jsx global>{`@keyframes drop { 0% { transform: translateY(-50px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(300px); opacity: 0; } } .animate-drop { display: inline-block; animation: drop linear infinite; animation-duration: 0.8s; }`}</style>
-    </div>
-  );
 }
 </file>
 
@@ -3212,7 +3372,10 @@ export default function Home() {
   const res = await fetch("/api/generate-plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal, durationDays, message: combined, userHistory }),
+    body: JSON.stringify({ goal, durationDays, 
+      message, 
+      userId: user.uid, 
+      combined, userHistory }),
   });
   };
 
@@ -3636,6 +3799,777 @@ export default function Home() {
     </main>
   </div>
 );
+}
+</file>
+
+<file path="app/garden/[routeId]/page.tsx">
+"use client";
+
+import { useState, use, useEffect, useRef } from "react"; 
+import { auth } from "@/lib/firebase"; 
+import { onAuthStateChanged, User } from "firebase/auth";
+import AppleTree from "@/components/AppleTree";
+import HarvestModal from "@/components/HarvestModal";
+import Link from "next/link";
+import { AppleVariety, APPLE_NAMES, APPLE_COLORS } from "@/lib/apple"; 
+
+export default function GardenPage({ params }: { params: Promise<{ routeId: string }> }) {
+  const { routeId } = use(params);
+
+  // 1. 状態管理
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [nutrition, setNutrition] = useState(0);
+  const [hasGrown, setHasGrown] = useState(false);
+  const [useMood, setUseMood] = useState(false); 
+  const [mood, setMood] = useState(3);
+  const [memo, setMemo] = useState("");
+  const [isWatering, setIsWatering] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+  const [aiMessage, setAiMessage] = useState("");
+  const [pendingApples, setPendingApples] = useState<any[]>([]);
+  const [routeName, setRouteName] = useState("");
+  const [variety, setVariety] = useState<AppleVariety>('forest');
+  const [currentStep, setCurrentStep] = useState<{ scheduledDay: number; title: string } | null>(null);
+  
+  // ★ ミツバチ応援による追加ステート
+  const [seeds, setSeeds] = useState(0); // 情熱の種
+  const [isCompleted, setIsCompleted] = useState(false); // 旅が終わっているか
+
+  // マルチモーダル用
+  const [image, setImage] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const pendingCount = pendingApples.length;
+  const isFull = nutrition >= 100;
+
+  // 音声認識（省略なし）
+  const toggleRecording = async () => {
+    if (isRecording) { mediaRecorderRef.current?.stop(); setIsRecording(false); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder; audioChunksRef.current = [];
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64 = (reader.result as string).split(",")[1];
+          try {
+            const res = await fetch("/api/transcribe-audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio: base64, mimeType: "audio/webm" }) });
+            const data = await res.json();
+            if (data.text) setMemo(prev => prev + (prev ? "\n" : "") + data.text);
+          } catch (e) { console.error(e); }
+        };
+        reader.readAsDataURL(audioBlob);
+      };
+      mediaRecorder.start(); setIsRecording(true);
+    } catch (e) { alert("マイクを許可してください"); }
+  };
+
+  // ─── ②：データ取得とミツバチ受取ロジック ───
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
+    
+    async function fetchRoute() {
+      try {
+        const res = await fetch(`/api/get-route?routeId=${routeId}`);
+        const data = await res.json();
+        
+        setRouteName(data.goal || "無題の目標");
+        setHasGrown(data.hasGrown || false);
+        setVariety(data.currentVariety || 'forest');
+        setPendingApples(data.pendingApples || []);
+        
+        const currentProgress = data.progress || 0;
+        setIsCompleted(currentProgress >= 100);
+        setSeeds(data.seeds || 0);
+
+        // ミツバチが届いているかチェック
+        const incomingBees = data.pendingBees || 0;
+        
+        if (incomingBees > 0) {
+          if (currentProgress >= 100) {
+            // A. 完遂後の特典：情熱の種に変換
+            const newSeeds = (data.seeds || 0) + incomingBees;
+            setSeeds(newSeeds);
+            setAiMessage(`完遂した「${data.goal}」に ${incomingBees} 匹のミツバチが訪れ、${incomingBees}粒の『情熱の種』を置いていきました🌱 次の旅で使えます！`);
+            setNutrition(100);
+
+            // DB側をリセット
+            await fetch("/api/update-route-progress", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ routeId, pendingBees: 0, seeds: newSeeds }),
+            });
+          } else {
+            // B. 継続中の特典：成長ブースト
+            const bonus = incomingBees * 10;
+            const nextNutrition = Math.min((data.nutrition || 0) + bonus, 100);
+            setNutrition(nextNutrition);
+            setAiMessage(`仲間からのミツバチが ${incomingBees} 匹届きました！木が ${bonus}% 急成長しました🐝✨`);
+            
+            await fetch("/api/update-route-progress", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ 
+                routeId, 
+                nutrition: nextNutrition, 
+                pendingBees: 0, 
+                variety: data.currentVariety || 'forest', 
+                hasGrown: nextNutrition === 100 ? true : data.hasGrown 
+              }),
+            });
+          }
+        } else {
+          setNutrition(data.nutrition || 0);
+        }
+
+        const steps = data.steps || [];
+        const sortedSteps = [...steps].sort((a: any, b: any) => a.scheduledDay - b.scheduledDay);
+        setCurrentStep(sortedSteps.find((s: any) => !s.done) || null);
+
+      } catch (e) { console.error(e); } finally { setLoading(false); }
+    }
+
+    fetchRoute();
+    return () => unsubscribe();
+  }, [routeId]);
+
+  // 進捗保存ロジック（省略なし）
+  const saveProgress = async (newN: number, newA: any[], curV: string, grown: boolean) => {
+    try {
+      await fetch("/api/update-route-progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routeId, nutrition: newN, pendingApples: newA, variety: curV, hasGrown: grown }),
+      });
+    } catch (e) { console.error(e); }
+  };
+
+  const handleGiveNutrition = async () => {
+    if (isFull) return;
+    const hasInput = useMood || memo.trim() || image;
+    if (!hasInput) return alert("今日の頑張りを見せてください🌱");
+    setIsWatering(true);
+    try {
+      const response = await fetch("/api/generate-apple", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ moodScore: useMood ? mood : null, note: memo.trim(), image: image }) });
+      const data = await response.json();
+      const nextNutrition = Math.min(nutrition + 25, 100);
+      let nextApples = [...pendingApples];
+      const existingIndex = nextApples.findIndex(a => a.variety === data.variety);
+      const newNote = memo.trim() || (image ? "（写真で報告）" : "（養分を注いだ）");
+      if (existingIndex !== -1) {
+        nextApples[existingIndex] = { ...nextApples[existingIndex], note: nextApples[existingIndex].note + " | " + newNote, comment: data.message, createdAt: new Date().toISOString() };
+      } else {
+        nextApples.push({ variety: data.variety, note: newNote, moodScore: useMood ? mood : null, comment: data.message, createdAt: new Date().toISOString(), stepDay: currentStep?.scheduledDay ?? null, stepTitle: currentStep?.title ?? null });
+      }
+      setVariety(data.variety); setPendingApples(nextApples); setNutrition(nextNutrition);
+      const nextHasGrown = nextNutrition === 100 ? true : hasGrown;
+      setHasGrown(nextHasGrown); setAiMessage(data.message); setMemo(""); setImage(null);
+      saveProgress(nextNutrition, nextApples, data.variety, nextHasGrown);
+    } finally { setIsWatering(false); }
+  };
+
+  const handleCloseModal = async () => {
+    setShowModal(false);
+    if (user && pendingApples.length > 0) {
+      try {
+        await Promise.all(pendingApples.map(apple => fetch("/api/save-log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.uid, routeId, routeName, moodScore: apple.moodScore || 3, note: apple.note || "", variety: apple.variety, comment: apple.comment || "", source: "garden", stepDay: currentStep?.scheduledDay ?? null, stepTitle: currentStep?.title ?? null }) })));
+      } catch (e) { console.error(e); }
+    }
+    setPendingApples([]); setNutrition(0); setAiMessage("");
+    saveProgress(0, [], variety, true);
+  };
+
+  let treeLevel = hasGrown ? 2 : (nutrition < 30 ? 0 : nutrition < 60 ? 1 : 2);
+
+  if (loading) return <div className="p-10 text-center font-bold">農園を準備中...</div>;
+
+  return (
+    <div className="min-h-screen bg-orange-50 p-6 pb-32 flex flex-col items-center">
+      <header className="mb-8 text-center relative w-full max-w-2xl">
+        <h1 className="text-3xl font-black text-orange-900">🍎 {routeName} 農園</h1>
+        {/* ★ 情熱の種の表示 */}
+        <div className="absolute top-0 right-0 bg-white/80 px-3 py-1 rounded-full border border-orange-200 flex items-center gap-1 shadow-sm">
+          <span className="text-lg">🌱</span>
+          <span className="text-sm font-black text-orange-600">{seeds}</span>
+        </div>
+      </header>
+
+      <div className="max-w-5xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 items-start mb-10">
+        
+        {/* 左側：入力エリア（省略なし） */}
+        <div className="bg-white p-8 rounded-[40px] shadow-xl border-4 border-orange-100 space-y-6">
+          <div className="flex justify-between items-center">
+            <h2 className="text-xl font-black text-slate-700">📝 今日の養分</h2>
+            <div className="flex gap-2">
+              <label className="cursor-pointer bg-orange-50 p-2 rounded-xl border border-orange-100 hover:bg-orange-100 transition-colors"><span>📷</span><input type="file" accept="image/*" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) { const r = new FileReader(); r.onloadend = () => setImage(r.result as string); r.readAsDataURL(file); } }} /></label>
+              <button onClick={toggleRecording} className={`p-2 rounded-xl border transition-all ${isRecording ? 'bg-red-500 border-red-600 animate-pulse' : 'bg-orange-50 border-orange-100'}`}><span>{isRecording ? '🛑' : '🎙️'}</span></button>
+            </div>
+          </div>
+          <div className="relative">
+            <textarea className="w-full p-4 bg-orange-50/20 border-2 border-orange-100 text-slate-900 font-bold rounded-2xl h-32 outline-none focus:border-orange-500 transition-all text-sm" placeholder={isRecording ? "音声を聞き取っています..." : "写真の説明や頑張りをメモ..."} value={memo} onChange={(e) => setMemo(e.target.value)} />
+            {isRecording && <div className="absolute top-2 right-2 flex gap-1"><span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-bounce"></span><span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-bounce [animation-delay:0.2s]"></span></div>}
+          </div>
+          {image && ( <div className="relative w-full h-32 rounded-2xl overflow-hidden border-2 border-orange-200"> <img src={image} className="w-full h-full object-cover" /> <button onClick={() => setImage(null)} className="absolute top-2 right-2 bg-black/50 text-white w-6 h-6 rounded-full text-xs">✕</button> </div> )}
+          <div className="bg-orange-50/50 p-4 rounded-2xl border-2 border-orange-100">
+            <div className="flex items-center justify-between mb-4">
+              <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={useMood} onChange={(e) => setUseMood(e.target.checked)} className="w-5 h-5 accent-orange-500" /><span className="font-bold text-slate-700 text-sm">やる気レバー</span></label>
+              {useMood && <span className="text-orange-500 font-black px-2 py-1 bg-white rounded-lg shadow-sm text-xs">Lv.{mood}</span>}
+            </div>
+            <input type="range" min="1" max="5" value={mood} disabled={!useMood} onChange={(e) => setMood(Number(e.target.value))} className={`w-full ${useMood ? 'accent-orange-500' : 'opacity-30'}`} />
+          </div>
+          <button onClick={isFull ? () => setShowModal(true) : handleGiveNutrition} disabled={isWatering} className="w-full py-5 text-white font-black rounded-3xl shadow-lg transition-all active:scale-95" style={{ backgroundColor: isCompleted ? "#fbbf24" : APPLE_COLORS[variety] }}>
+           {isWatering ? "吸収中..." : isFull ? `🍎 収穫可能です！` : isCompleted ? `応援を力に変える (${seeds}) 🌱` : `養分を注ぐ (${nutrition}%) 💧`}
+          </button>
+        </div>  
+
+        {/* 右側：木のエフェクト */}
+        <div className="relative overflow-hidden flex flex-col items-center justify-center bg-white p-8 rounded-[40px] shadow-xl border-4 border-emerald-100 min-h-[480px]">
+          {isWatering && ( <div className="absolute inset-0 pointer-events-none z-20"> {[...Array(6)].map((_, i) => ( <span key={i} className="absolute text-2xl animate-drop" style={{ left: `${20 + i * 15}%`, color: APPLE_COLORS[variety], animationDelay: `${i * 0.1}s` }}>💧</span> ))} </div> )}
+          
+          {/* ★ 100%達成時：ミツバチが多いとキラキラさせる演出 */}
+          {isCompleted && seeds > 5 && (
+            <div className="absolute inset-0 animate-pulse bg-yellow-200/20 blur-3xl rounded-full z-0" />
+          )}
+
+          <div style={{ transform: `scale(${1 + (seeds * 0.02 > 0.3 ? 0.3 : seeds * 0.02)})`, transition: "all 1s ease-out" }}>
+            <AppleTree level={treeLevel} variety={variety === 'rare' ? 'sun' : variety} hasApple={pendingCount > 0} moodScore={useMood ? mood : 3} />
+          </div>
+
+          <div className="mt-8 w-full max-w-xs text-center relative z-10">
+            <div className="flex justify-between text-[10px] font-black mb-2 uppercase tracking-widest" style={{ color: isCompleted ? "#fbbf24" : APPLE_COLORS[variety] }}>
+              <span>{isCompleted ? "Passion Seeds" : "Growth"}</span>
+              <span>{isCompleted ? seeds : nutrition}%</span>
+            </div>
+            <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden border-2 border-emerald-50">
+              <div className="h-full transition-all duration-1000" style={{ width: `${isCompleted ? (seeds % 100) : nutrition}%`, backgroundColor: isCompleted ? "#fbbf24" : APPLE_COLORS[variety] }} />
+            </div>
+          </div>
+          {aiMessage && ( <div className="mt-6 p-4 bg-orange-50 border-2 border-orange-200 rounded-2xl shadow-sm mx-4 animate-in zoom-in fade-in relative z-10"> <p className="text-[9px] font-black text-orange-400 uppercase mb-1 text-center">園主の言葉</p> <p className="text-sm text-slate-700 font-bold italic text-center">「{aiMessage}」</p> </div> )}
+        </div>
+      </div>
+      
+      <footer className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md bg-white/90 backdrop-blur-md p-4 rounded-full shadow-2xl flex justify-around items-center z-40">
+        <Link href={`/map/${routeId}`} className="flex flex-col items-center gap-1">🗺️<span className="text-[10px] font-black text-slate-400">マップ</span></Link>
+        <Link href={`/collection/${routeId}`} className="flex flex-col items-center gap-1">📦<span className="text-[10px] font-black text-slate-400">貯蔵庫</span></Link>
+        <Link href="/history" className="flex flex-col items-center gap-1">📜<span className="text-[10px] font-black text-slate-400">履歴</span></Link>
+      </footer>
+      {showModal && <HarvestModal apples={pendingApples} onClose={handleCloseModal} />}
+      <style jsx global>{`@keyframes drop { 0% { transform: translateY(-50px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(300px); opacity: 0; } } .animate-drop { display: inline-block; animation: drop linear infinite; animation-duration: 0.8s; }`}</style>
+    </div>
+  );
+}
+</file>
+
+<file path="components/MissionMap.tsx">
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { auth } from "@/lib/firebase";
+import { onAuthStateChanged, User } from "firebase/auth";
+import { exportToGoogleTasks } from "@/lib/googleTasks";
+import { getGoogleTasksAccessToken } from "@/lib/auth";
+
+type Step = {
+  id: string;
+  title: string;
+  description: string;
+  scheduledDay: number;
+  done: boolean;
+};
+
+type Phase = {
+  title: string;
+  startDay: number;
+  endDay: number;
+  description: string;
+};
+
+type Props = {
+  routeId: string;
+  goal: string;
+  summary: string;
+  progress: number;
+  steps: Step[];
+  phases?: Phase[];
+};
+
+function StepCard({
+  step, index, total, unlocked, loading,
+  editingStepId, editTitle, editDescription,
+  onToggle, onEditStart, onEditSave, onEditCancel,
+  onEditTitleChange, onEditDescriptionChange,
+}: {
+  step: Step; index: number; total: number; unlocked: boolean; loading: boolean;
+  editingStepId: string | null; editTitle: string; editDescription: string;
+  onToggle: () => void; onEditStart: () => void; onEditSave: () => void;
+  onEditCancel: () => void; onEditTitleChange: (v: string) => void;
+  onEditDescriptionChange: (v: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { threshold: 0.1 });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const isEditing = editingStepId === step.id;
+  const isLeft = index % 2 === 0;
+  const depthScale = 1 - (total - 1 - index) * 0.04;
+
+  return (
+    <div
+      ref={ref}
+      className="relative flex items-center py-5"
+      style={{
+        opacity: visible ? (unlocked ? 1 : 0.4) : 0,
+        transform: visible
+          ? `scaleX(${depthScale}) translateY(0)`
+          : `scaleX(${depthScale}) translateY(28px)`,
+        transformOrigin: "center center",
+        transition: "opacity 0.4s ease, transform 0.4s ease",
+      }}
+    >
+      <div className="absolute left-1/2 z-10 -translate-x-1/2">
+        <div className="flex h-7 w-7 items-center justify-center rounded-full" style={{ backgroundColor: "#e0f2fe" }}>
+          <div className={`h-4 w-4 rounded-full border-2 transition-all duration-300 ${
+            step.done ? "border-sky-500 bg-sky-400 shadow-[0_0_12px_rgba(56,189,248,0.7)]"
+            : unlocked ? "border-sky-300 bg-white" : "border-sky-200 bg-sky-100"
+          }`} />
+        </div>
+      </div>
+
+      <div className={`w-[44%] ${isLeft ? "mr-auto pl-1" : "ml-auto pr-1"}`}>
+        <div className={`rounded-2xl border p-4 transition-all duration-300 ${
+          step.done ? "border-sky-300 bg-sky-100/80 shadow-md"
+          : unlocked ? "border-sky-200 bg-white shadow-lg"
+          : "border-sky-100 bg-sky-50/60"
+        }`}>
+          {!unlocked && <p className="mb-1 text-xs text-sky-300">🔒 前を完了してください</p>}
+          <p className={`mb-1 text-xs font-bold ${step.done ? "text-sky-500" : unlocked ? "text-sky-400" : "text-sky-300"}`}>
+            Day {step.scheduledDay}
+          </p>
+
+          {isEditing ? (
+            <div className="space-y-2">
+              <input type="text" value={editTitle} onChange={(e) => onEditTitleChange(e.target.value)}
+                className="w-full rounded-lg border border-sky-300 bg-sky-50 p-2 text-sm font-bold text-sky-900 focus:outline-none" />
+              <textarea value={editDescription} onChange={(e) => onEditDescriptionChange(e.target.value)}
+                className="w-full rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs text-sky-700 focus:outline-none" rows={2} />
+              <div className="flex gap-2">
+                <button onClick={onEditSave} className="rounded-lg bg-sky-500 px-3 py-1 text-xs font-bold text-white">保存</button>
+                <button onClick={onEditCancel} className="rounded-lg bg-sky-100 px-3 py-1 text-xs text-sky-600">キャンセル</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <h3 className={`text-sm font-black leading-snug ${step.done ? "text-sky-400 line-through" : "text-sky-900"}`}>
+                {step.title}
+              </h3>
+              <p className={`mt-1 text-xs leading-relaxed ${step.done ? "text-sky-400" : unlocked ? "text-sky-600" : "text-sky-300"}`}>
+                {step.description}
+              </p>
+              <div className="mt-3 flex items-center justify-between">
+                <label className={`flex cursor-pointer items-center gap-2 ${!unlocked ? "cursor-not-allowed" : ""}`}>
+                  <input type="checkbox" checked={step.done} disabled={loading || !unlocked}
+                    onChange={onToggle} className="h-4 w-4 accent-sky-500" />
+                  <span className="text-xs text-sky-400">{step.done ? "完了！" : "完了にする"}</span>
+                </label>
+                {unlocked && !step.done && (
+                  <button onClick={onEditStart} className="text-xs text-sky-300 underline hover:text-sky-500">編集</button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function MissionMap({ routeId, goal, summary, progress, steps, phases,}: Props) {
+  const [user, setUser] = useState<User | null>(null);
+  const [localSteps, setLocalSteps] = useState(steps);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [editingStepId, setEditingStepId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [headerH] = useState(160);
+  const [footerH] = useState(180);
+
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [pendingStep, setPendingStep] = useState<Step | null>(null);
+  const [feedbackData, setFeedbackData] = useState({ difficulty: 3, feeling: "まあまあ", memo: "", energy: 3 });
+
+  const [showDiagnosis, setShowDiagnosis] = useState(false);
+  const [diagnosisText, setDiagnosisText] = useState("");
+  const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+  const [chartData, setChartData] = useState<{
+    stepLabels: string[];
+    difficulties: number[];
+    energies: number[];
+    feelings: string[];
+    moodScores: number[];
+  } | null>(null);
+
+  const [shareComment, setShareComment] = useState("");
+  const [shareGoal, setShareGoal] = useState(true);
+  const [shareDiagnosis, setShareDiagnosis] = useState(true);
+  const [shareChart, setShareChart] = useState(true);
+  const [shareToOrchard, setShareToOrchard] = useState(false);
+  const [sharePosting, setSharePosting] = useState(false);
+
+  const router = useRouter();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+
+
+  const [openPhases, setOpenPhases] = useState<Set<number>>(() => {
+    if (!phases || phases.length === 0) return new Set([0]);
+    const completedDays = sortedAsc.filter(s => s.done).map(s => s.scheduledDay);
+    const maxCompletedDay = completedDays.length > 0 ? Math.max(...completedDays) : 0;
+    const currentPhaseIndex = phases.findIndex(p => maxCompletedDay >= p.startDay && maxCompletedDay <= p.endDay);
+    return new Set([Math.max(0, currentPhaseIndex)]);
+  });
+
+  const togglePhase = (index: number) => {
+    setOpenPhases(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) { next.delete(index); } else { next.add(index); }
+      return next;
+    });
+  };
+
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setTimeout(() => { el.scrollTop = el.scrollHeight; }, 100);
+  }, []);
+
+  useEffect(() => {
+    if (!showDiagnosis) return;
+    async function fetchDiagnosis() {
+      setDiagnosisLoading(true);
+      try {
+        const routeRes = await fetch(`/api/get-route?routeId=${routeId}`);
+        const routeData = await routeRes.json();
+        const logsRes = await fetch(`/api/get-user-logs?userId=${user?.uid}&routeId=${routeId}`);
+        const logsData = await logsRes.json();
+        const feedbacks = (routeData.stepFeedbacks || []).sort((a: any, b: any) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime());
+        const logs = (logsData.logs || []).sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        setChartData({
+          stepLabels: feedbacks.map((f: any) => `Day ${f.stepTitle?.slice(0, 6) || ""}`),
+          difficulties: feedbacks.map((f: any) => f.difficulty || 3),
+          energies: feedbacks.map((f: any) => f.energy || 3),
+          feelings: feedbacks.map((f: any) => f.feeling || "まあまあ"),
+          moodScores: logs.map((l: any) => l.moodScore || 3),
+        });
+        const res = await fetch("/api/completion-diagnosis", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ routeId, goal, appleLogs: logsData.logs || [], stepFeedbacks: routeData.stepFeedbacks || [] }),
+        });
+        const data = await res.json();
+        setDiagnosisText(data.diagnosis);
+      } catch (e) {
+        setDiagnosisText("旅の診断中にエラーが発生しました。ですが、あなたの努力は本物です！");
+      } finally {
+        setDiagnosisLoading(false);
+      }
+    }
+    fetchDiagnosis();
+  }, [showDiagnosis, routeId, goal, user]);
+
+  const sortedAsc = [...localSteps].sort((a, b) => a.scheduledDay - b.scheduledDay);
+  const sortedSteps = [...sortedAsc].reverse();
+  const currentProgress = localSteps.length === 0 ? 0 : Math.round((localSteps.filter((s) => s.done).length / localSteps.length) * 100);
+
+  const isUnlocked = (stepId: string) => {
+    const idx = sortedAsc.findIndex(s => s.id === stepId);
+    if (idx === 0) return true;
+    return sortedAsc[idx - 1].done;
+  };
+
+  const handleToggle = async (stepId: string) => {
+    if (!isUnlocked(stepId)) return;
+    const target = localSteps.find(s => s.id === stepId);
+    if (target && !target.done) {
+      setPendingStep(target);
+      setShowFeedbackModal(true);
+      return;
+    }
+    const updated = localSteps.map((s) => s.id === stepId ? { ...s, done: false } : s);
+    setLocalSteps(updated);
+    setLoading(true);
+    try {
+      await fetch("/api/update-steps", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ routeId, steps: updated }) });
+      const res = await fetch("/api/update-steps", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routeId, steps: updated }),
+      });
+      if (!res.ok) throw new Error("更新失敗");
+      router.refresh();
+    } catch (e) {
+      console.error(e);
+      alert("更新に失敗しました");
+    } finally { setLoading(false); }
+  };
+
+  const handleFeedbackSubmit = async () => {
+    if (!pendingStep) return;
+    setShowFeedbackModal(false);
+    const updated = localSteps.map(s => s.id === pendingStep.id ? { ...s, done: true } : s);
+  const handleEditStart = (step: Step) => {
+    setEditingStepId(step.id);
+    setEditTitle(step.title);
+    setEditDescription(step.description);
+  };
+
+
+
+  const handleEditSave = async (stepId: string) => {
+    const updated = localSteps.map((s) => s.id === stepId ? { ...s, title: editTitle, description: editDescription } : s);
+    setLocalSteps(updated);
+    setEditingStepId(null);
+    await fetch("/api/update-steps", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ routeId, steps: updated }) });
+  };
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const token = await getGoogleTasksAccessToken();
+      if (!token) throw new Error("トークンなし");
+      await exportToGoogleTasks(token, goal, localSteps);
+      alert(`「Route & Root: ${goal}」を Google Tasks に書き出しました`);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "書き出しに失敗しました");
+    } finally { setExporting(false); }
+  };
+
+  return (
+    <div className="relative h-screen overflow-hidden text-sky-900" style={{ background: "linear-gradient(180deg, #e0f2fe 0%, #f0f9ff 50%, #ffffff 100%)" }}>
+
+      {/* ── トップバー（全幅・PC/SP共通） ── */}
+      <div className="sticky top-0 z-30 w-full px-4 py-3 text-center" style={{ backgroundColor: "#e0f2fe" }}>
+        <div className="mx-auto flex max-w-6xl items-center justify-between">
+          <Link href="/history" className="text-xs font-bold text-sky-500 hover:text-sky-700">
+            ← 旅の記録
+          </Link>
+          <div className="flex-1 text-center">
+            <span className="text-xs font-bold uppercase tracking-widest text-sky-500">✦ Goal ✦</span>
+            <h1 className="text-sm font-black text-sky-900 md:text-base">{goal}</h1>
+          </div>
+          <div className="text-right">
+            <span className="text-xs font-bold text-sky-600">{currentProgress}%</span>
+          </div>
+        </div>
+        {/* 進捗バー */}
+        <div className="mx-auto mt-2 max-w-6xl">
+          <div className="h-1 w-full overflow-hidden rounded-full bg-sky-200">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-400 transition-all duration-700"
+              style={{ width: `${currentProgress}%` }}
+            />
+          </div>
+        </div>
+        <div className="pointer-events-none absolute bottom-0 left-0 right-0 translate-y-full h-8"
+          style={{ background: "linear-gradient(to bottom, #e0f2fe, transparent)" }} />
+      </div>
+
+      {/* ── メインコンテンツ（PC: 2カラム, SP: 1カラム） ── */}
+      <div className="mx-auto max-w-6xl px-4 pt-6 pb-24 md:grid md:grid-cols-[1fr_320px] md:gap-8 md:pb-8">
+
+        {/* ── 左カラム：3Dロードマップ ── */}
+        <div
+          ref={scrollRef}
+          className="relative overflow-y-auto md:h-[calc(100vh-120px)] md:rounded-2xl"
+        >
+          <div className="relative mx-auto max-w-lg px-2">
+            {/* 中央縦ライン */}
+            <div className="pointer-events-none absolute left-1/2 w-px -translate-x-1/2"
+              style={{
+                top: 0, bottom: 0,
+                background: "linear-gradient(to bottom, rgba(125,211,252,0.1), rgba(125,211,252,0.5) 20%, rgba(125,211,252,0.5) 80%, rgba(125,211,252,0.1))",
+              }}
+            />
+
+            <div className="flex flex-col">
+              {phases && phases.length > 0 ? (
+                phases.map((phase, phaseIndex) => {
+                  const phaseSteps = sortedSteps.filter(
+                    s => s.scheduledDay >= phase.startDay && s.scheduledDay <= phase.endDay
+                  );
+                  const phaseDone = phaseSteps.filter(s => s.done).length;
+                  const phaseTotal = phaseSteps.length;
+                  const phaseProgress = phaseTotal === 0 ? 0 : Math.round((phaseDone / phaseTotal) * 100);
+                  const isOpen = openPhases.has(phaseIndex);
+                  const isCompleted = phaseProgress === 100;
+
+                  return (
+                    <div key={phaseIndex} className="mb-4">
+                      <button
+                        onClick={() => togglePhase(phaseIndex)}
+                        className="w-full flex items-center justify-between px-4 py-3 rounded-2xl bg-sky-100/80 border border-sky-200 text-left transition hover:bg-sky-200/60"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-lg">{isCompleted ? "✅" : isOpen ? "📖" : "📕"}</span>
+                          <div>
+                            <p className="text-sm font-black text-sky-900">{phase.title}</p>
+                            <p className="text-xs text-sky-500">Day {phase.startDay} 〜 {phase.endDay}　{phaseDone}/{phaseTotal} 完了</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="w-16 h-1.5 rounded-full bg-sky-200 overflow-hidden">
+                            <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${phaseProgress}%` }} />
+                          </div>
+                          <span className="text-sky-400 text-xs">{isOpen ? "▲" : "▼"}</span>
+                        </div>
+                      </button>
+                      {isOpen && (
+                        <div className="mt-2">
+                          {phaseSteps.map((step) => {
+                            const globalIndex = sortedSteps.findIndex(s => s.id === step.id);
+                            return (
+                              <StepCard
+                                key={step.id} step={step} index={globalIndex} total={sortedSteps.length}
+                                unlocked={isUnlocked(step.id)} loading={loading}
+                                editingStepId={editingStepId} editTitle={editTitle} editDescription={editDescription}
+                                onToggle={() => handleToggle(step.id)} onEditStart={() => handleEditStart(step)}
+                                onEditSave={() => handleEditSave(step.id)} onEditCancel={() => setEditingStepId(null)}
+                                onEditTitleChange={setEditTitle} onEditDescriptionChange={setEditDescription}
+                              />
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              ) : (
+                sortedSteps.map((step, index) => (
+                  <StepCard
+                    key={step.id} step={step} index={index} total={sortedSteps.length}
+                    unlocked={isUnlocked(step.id)} loading={loading}
+                    editingStepId={editingStepId} editTitle={editTitle} editDescription={editDescription}
+                    onToggle={() => handleToggle(step.id)} onEditStart={() => handleEditStart(step)}
+                    onEditSave={() => handleEditSave(step.id)} onEditCancel={() => setEditingStepId(null)}
+                    onEditTitleChange={setEditTitle} onEditDescriptionChange={setEditDescription}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── 右カラム：サイドバー（PC: sticky, SP: 下部固定ボタンのみ） ── */}
+        <div className="hidden md:block">
+          <div className="sticky top-[88px] space-y-4">
+
+            {/* 概要カード */}
+            <div className="rounded-2xl border border-sky-200 bg-white p-5 shadow-sm">
+              <p className="mb-3 text-xs font-bold uppercase tracking-widest text-sky-400">旅の概要</p>
+              <p className="text-sm text-sky-700">{summary}</p>
+              <div className="mt-4">
+                <div className="mb-1 flex justify-between text-xs text-sky-400">
+                  <span>全体進捗</span>
+                  <span className="font-bold text-sky-600">{currentProgress}%</span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-sky-100">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-400 transition-all duration-700"
+                    style={{ width: `${currentProgress}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-sky-400">
+                  {localSteps.filter(s => s.done).length} / {localSteps.length} ステップ完了
+                </p>
+              </div>
+            </div>
+
+            {/* 今やるべきタスク */}
+            {nextStep && (
+              <div className="rounded-2xl border-2 border-sky-300 bg-sky-50 p-5 shadow-sm">
+                <p className="mb-2 text-xs font-bold uppercase tracking-widest text-sky-500">
+                  🎯 次のステップ
+                </p>
+                <p className="text-xs font-bold text-sky-400">Day {nextStep.scheduledDay}</p>
+                <p className="mt-1 text-sm font-black text-sky-900">{nextStep.title}</p>
+                <p className="mt-1 text-xs text-sky-600">{nextStep.description}</p>
+                <button
+                  onClick={() => handleToggle(nextStep.id)}
+                  disabled={loading || !isUnlocked(nextStep.id)}
+                  className="mt-3 w-full rounded-xl bg-sky-500 py-2 text-xs font-bold text-white transition hover:bg-sky-600 disabled:opacity-40"
+                >
+                  {isUnlocked(nextStep.id) ? "✓ 完了にする" : "🔒 前のステップを完了してください"}
+                </button>
+              </div>
+            )}
+
+            {/* 完了時メッセージ */}
+            {currentProgress === 100 && (
+              <div className="rounded-2xl border-2 border-emerald-300 bg-emerald-50 p-5 text-center">
+                <p className="text-2xl">🎉</p>
+                <p className="mt-1 text-sm font-black text-emerald-700">旅を完走しました！</p>
+              </div>
+            )}
+
+            {/* アクションボタン */}
+            <div className="space-y-2">
+              <button
+                onClick={handleExport}
+                disabled={exporting}
+                className="w-full rounded-xl bg-blue-500 py-3 text-sm font-bold text-white transition hover:bg-blue-600 disabled:opacity-50"
+              >
+                {exporting ? "書き出し中..." : "Google Tasks に書き出す"}
+              </button>
+              <Link href={`/garden/${routeId}`}
+                className="block w-full rounded-xl bg-emerald-500 py-3 text-center text-sm font-bold text-white transition hover:bg-emerald-600">
+                果樹園へ向かう 🍎
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── SP用 下部ボタン（PCでは非表示） ── */}
+      <div className="fixed bottom-0 left-0 right-0 z-30 px-4 pb-6 pt-4 md:hidden"
+        style={{ background: "linear-gradient(to top, #ffffff 60%, transparent)" }}>
+        <div className="flex flex-col gap-3">
+          <button onClick={handleExport} disabled={exporting}
+            className="w-full rounded-xl bg-blue-500 py-3 font-bold text-white transition hover:bg-blue-600 disabled:opacity-50">
+            {exporting ? "書き出し中..." : "Google Tasks に書き出す"}
+          </button>
+          <Link href={`/garden/${routeId}`}
+            className="w-full rounded-xl bg-emerald-500 py-3 text-center font-bold text-white transition hover:bg-emerald-600">
+            果樹園（Garden）へ向かう 🍎
+          </Link>
+          <Link href="/history"
+            className="w-full rounded-xl bg-sky-100 py-3 text-center font-bold text-sky-600 transition hover:bg-sky-200">
+            📜 旅の記録を見る
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+  }
 }
 </file>
 

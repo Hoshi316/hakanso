@@ -124,25 +124,54 @@ export default function Home() {
     return () => unsubscribe();
   }, []);
 
-  const handleGenerate = async () => {
-    // 「出発地」「旅の荷物」「長期の問い」を結合してmessageとして渡す
-    const combined = [
-    currentLevel ? `【現在地】${currentLevel}` : "",
-    constraints ? `【制約・リソース】${constraints}` : "",
-    deepQuestion ? `【この旅で本当に変えたいこと】${deepQuestion}` : "",
-  ].filter(Boolean).join("\n");
+  
 
-  setCombinedMessage(combined); // stateに保存
 
-  const res = await fetch("/api/generate-plan", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal, durationDays, 
-      message: combined, 
-      userId: user.uid, 
-      userHistory }),
-  });
-  };
+    const handleGenerate = async () => {
+      if (!user) return;
+      setLoading(true);
+      setError("");
+      setEditablePlans(null);
+
+      try {
+        const combined = [
+          currentLevel ? `【現在地】${currentLevel}` : "",
+          constraints ? `【制約・リソース】${constraints}` : "",
+          deepQuestion ? `【この旅で本当に変えたいこと】${deepQuestion}` : "",
+        ].filter(Boolean).join("\n");
+
+        setCombinedMessage(combined);
+
+        const userHistory = await getUserRouteSummary(user.uid);
+
+        const res = await fetch("/api/generate-plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            goal,
+            durationDays,
+            message: combined,
+            userId: user.uid,
+            userHistory,
+          }),
+        });
+
+        const data: PlanResponse = await res.json();
+        if (!res.ok) throw new Error((data as any).error || "プラン生成に失敗しました");
+
+        const editable: EditablePlan[] = data.plans.map((plan) => ({
+          ...plan,
+          steps: plan.steps.map((step) => ({ ...step, _editing: false })),
+        }));
+        setEditablePlans(editable);
+        setRecommendedStyle(data.recommendedStyle);
+        setRecommendationMessage(data.recommendationMessage);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "エラーが発生しました");
+      } finally {
+        setLoading(false);
+      }
+    }; 
 
   const toggleEditStep = (planStyle: string, stepIndex: number) => {
     setEditablePlans((prev) =>
